@@ -1,29 +1,28 @@
 /**
  * On-Demand Project Deployment Orchestrator
- * Frontend JavaScript - Handles UI interactions and API calls
+ * Frontend JavaScript - Recruiter-friendly interface
  */
 
 // Global state
 const state = {
-    authenticated: false,
     projects: {},
     selectedProject: null,
-    statusPollingInterval: null
+    activeInstance: null,
+    statusPollingInterval: null,
+    deploymentsRemaining: 3
 };
 
 // DOM Elements
 const elements = {
     projectsGrid: document.getElementById('projectsGrid'),
-    authModal: document.getElementById('authModal'),
+    deployModal: document.getElementById('deployModal'),
     instanceModal: document.getElementById('instanceModal'),
-    authForm: document.getElementById('authForm'),
-    authError: document.getElementById('authError'),
-    authStatus: document.getElementById('authStatus'),
-    logoutBtn: document.getElementById('logoutBtn'),
+    deployForm: document.getElementById('deployForm'),
+    deployError: document.getElementById('deployError'),
     toastContainer: document.getElementById('toastContainer'),
     deployProjectName: document.getElementById('deployProjectName'),
-    passwordInput: document.getElementById('password'),
-    togglePassword: document.getElementById('togglePassword')
+    rateLimitInfo: document.getElementById('rateLimitInfo'),
+    activeInstanceBanner: document.getElementById('activeInstanceBanner')
 };
 
 // ============================================
@@ -37,6 +36,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function initializeApp() {
     await loadProjects();
+    await checkActiveInstance();
+    await updateRateLimitDisplay();
     startStatusPolling();
 }
 
@@ -57,99 +58,88 @@ async function loadProjects() {
     }
 }
 
-async function authenticate(password, captchaResponse) {
+async function checkActiveInstance() {
     try {
-        const response = await fetch('/api/auth', {
+        const response = await fetch('/api/active-instance');
+        const data = await response.json();
+
+        state.activeInstance = data.active_instance;
+        updateActiveInstanceBanner();
+    } catch (error) {
+        console.error('Error checking active instance:', error);
+    }
+}
+
+async function updateRateLimitDisplay() {
+    try {
+        const response = await fetch('/api/rate-limit');
+        const data = await response.json();
+
+        state.deploymentsRemaining = data.remaining;
+
+        if (elements.rateLimitInfo) {
+            if (data.remaining === 0) {
+                elements.rateLimitInfo.innerHTML = `
+                    <span class="rate-limit-warning">⚠️ Demo limit reached. Resets ${formatTimeUntil(data.reset_time)}</span>
+                `;
+            } else {
+                elements.rateLimitInfo.innerHTML = `
+                    <span class="rate-limit-ok">✓ ${data.remaining} demo${data.remaining !== 1 ? 's' : ''} remaining this hour</span>
+                `;
+            }
+        }
+    } catch (error) {
+        console.error('Error getting rate limit:', error);
+    }
+}
+
+async function deployProject(projectId, formData) {
+    try {
+        const response = await fetch(`/api/deploy/${projectId}`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'X-CSRFToken': getCSRFToken()
             },
-            body: JSON.stringify({
-                password,
-                captcha_response: captchaResponse
-            })
+            body: JSON.stringify(formData)
         });
 
         const data = await response.json();
 
         if (!response.ok) {
-            throw new Error(data.error || 'Authentication failed');
+            throw new Error(data.error || 'Deployment failed');
         }
 
-        state.authenticated = true;
-        updateAuthStatus();
         return data;
     } catch (error) {
         throw error;
     }
 }
 
-async function startInstance(projectId) {
+async function terminateInstance() {
     try {
-        const response = await fetch(`/api/instance/${projectId}/start`, {
+        const captchaResponse = typeof grecaptcha !== 'undefined'
+            ? grecaptcha.getResponse()
+            : null;
+
+        const response = await fetch('/api/terminate', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'X-CSRFToken': getCSRFToken()
-            }
+            },
+            body: JSON.stringify({ captcha_response: captchaResponse })
         });
 
         const data = await response.json();
 
         if (!response.ok) {
-            throw new Error(data.error || 'Failed to start instance');
+            throw new Error(data.error || 'Failed to terminate');
         }
 
         return data;
     } catch (error) {
         throw error;
-    }
-}
-
-async function stopInstance(projectId) {
-    try {
-        const response = await fetch(`/api/instance/${projectId}/stop`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRFToken': getCSRFToken()
-            }
-        });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-            throw new Error(data.error || 'Failed to stop instance');
-        }
-
-        return data;
-    } catch (error) {
-        throw error;
-    }
-}
-
-async function getInstanceStatus(projectId) {
-    try {
-        const response = await fetch(`/api/instance/${projectId}/status`);
-        return await response.json();
-    } catch (error) {
-        console.error('Error getting status:', error);
-        return { status: 'error' };
-    }
-}
-
-async function logout() {
-    try {
-        await fetch('/api/logout', {
-            method: 'POST',
-            headers: { 'X-CSRFToken': getCSRFToken() }
-        });
-        state.authenticated = false;
-        updateAuthStatus();
-        showToast('Logged out successfully', 'success');
-    } catch (error) {
-        console.error('Logout error:', error);
     }
 }
 
@@ -179,6 +169,8 @@ function createProjectCard(projectId, project) {
         'error': 'Error'
     };
 
+    const isActive = project.status === 'running' || project.status === 'starting';
+
     card.innerHTML = `
         <div class="card-header">
             <span class="card-icon">${project.icon || '📦'}</span>
@@ -198,9 +190,9 @@ function createProjectCard(projectId, project) {
         }
             </div>
             <div class="card-action">
-                ${project.status === 'running'
-            ? '<span>View Details</span>'
-            : '<span>Deploy</span>'
+                ${isActive
+            ? '<span>View Demo</span>'
+            : '<span>Start Demo</span>'
         }
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M5 12h14M12 5l7 7-7 7"/>
@@ -218,36 +210,67 @@ function updateProjectCard(projectId, status) {
     const card = document.querySelector(`[data-project-id="${projectId}"]`);
     if (!card) return;
 
-    // Update project state
     state.projects[projectId] = { ...state.projects[projectId], ...status };
-
-    // Re-render card
     const newCard = createProjectCard(projectId, state.projects[projectId]);
     card.replaceWith(newCard);
+}
+
+function updateActiveInstanceBanner() {
+    if (!elements.activeInstanceBanner) return;
+
+    if (state.activeInstance) {
+        const url = `http://${state.activeInstance.external_ip}:${state.activeInstance.port}`;
+        elements.activeInstanceBanner.innerHTML = `
+            <div class="active-banner">
+                <span class="banner-status">
+                    <span class="dot running pulse"></span>
+                    <strong>${state.activeInstance.project_name}</strong> is running
+                </span>
+                <span class="banner-info">
+                    <a href="${url}" target="_blank" class="banner-link">${state.activeInstance.external_ip}:${state.activeInstance.port}</a>
+                    <span class="banner-expiry">Expires ${formatTimeUntil(state.activeInstance.expires_at)}</span>
+                </span>
+                <button class="banner-stop" onclick="handleTerminate()">Stop Demo</button>
+            </div>
+        `;
+        elements.activeInstanceBanner.classList.add('visible');
+    } else {
+        elements.activeInstanceBanner.classList.remove('visible');
+    }
 }
 
 // ============================================
 // MODAL HANDLING
 // ============================================
 
-function showAuthModal(projectId, project) {
+function showDeployModal(projectId, project) {
     state.selectedProject = projectId;
     elements.deployProjectName.textContent = project.name;
-    elements.authModal.classList.add('active');
-    elements.passwordInput.focus();
+    elements.deployModal.classList.add('active');
 
     // Reset form
-    elements.authForm.reset();
-    elements.authError.classList.remove('show');
+    elements.deployForm.reset();
+    elements.deployError.classList.remove('show');
 
-    // Reset reCAPTCHA if available
+    // Reset reCAPTCHA
     if (typeof grecaptcha !== 'undefined') {
         grecaptcha.reset();
     }
+
+    // Show warning if replacing active instance
+    const warningEl = document.getElementById('replaceWarning');
+    if (warningEl) {
+        if (state.activeInstance && state.activeInstance.project_id !== projectId) {
+            warningEl.innerHTML = `⚠️ This will stop the currently running <strong>${state.activeInstance.project_name}</strong> demo.`;
+            warningEl.classList.add('show');
+        } else {
+            warningEl.classList.remove('show');
+        }
+    }
 }
 
-function hideAuthModal() {
-    elements.authModal.classList.remove('active');
+function hideDeployModal() {
+    elements.deployModal.classList.remove('active');
     state.selectedProject = null;
 }
 
@@ -315,33 +338,19 @@ function updateCountdown(expiresAt) {
 
 function setupEventListeners() {
     // Close modals
-    document.getElementById('closeModal').addEventListener('click', hideAuthModal);
+    document.getElementById('closeDeployModal').addEventListener('click', hideDeployModal);
     document.getElementById('closeInstanceModal').addEventListener('click', hideInstanceModal);
 
     // Click outside modal to close
-    elements.authModal.addEventListener('click', (e) => {
-        if (e.target === elements.authModal) hideAuthModal();
+    elements.deployModal.addEventListener('click', (e) => {
+        if (e.target === elements.deployModal) hideDeployModal();
     });
     elements.instanceModal.addEventListener('click', (e) => {
         if (e.target === elements.instanceModal) hideInstanceModal();
     });
 
-    // Auth form submission
-    elements.authForm.addEventListener('submit', handleAuthSubmit);
-
-    // Logout
-    elements.logoutBtn.addEventListener('click', logout);
-
-    // Password toggle
-    elements.togglePassword.addEventListener('click', () => {
-        const type = elements.passwordInput.type === 'password' ? 'text' : 'password';
-        elements.passwordInput.type = type;
-
-        const eyeOpen = elements.togglePassword.querySelector('.eye-open');
-        const eyeClosed = elements.togglePassword.querySelector('.eye-closed');
-        eyeOpen.style.display = type === 'password' ? 'block' : 'none';
-        eyeClosed.style.display = type === 'password' ? 'none' : 'block';
-    });
+    // Deploy form submission
+    elements.deployForm.addEventListener('submit', handleDeploySubmit);
 
     // Copy IP button
     document.getElementById('copyIP').addEventListener('click', () => {
@@ -353,12 +362,12 @@ function setupEventListeners() {
     });
 
     // Stop instance button
-    document.getElementById('stopInstance').addEventListener('click', handleStopInstance);
+    document.getElementById('stopInstance').addEventListener('click', handleStopFromModal);
 
     // Keyboard shortcuts
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
-            hideAuthModal();
+            hideDeployModal();
             hideInstanceModal();
         }
     });
@@ -368,47 +377,63 @@ function handleCardClick(projectId, project) {
     if (project.status === 'running') {
         showInstanceModal(projectId, project);
     } else if (project.status === 'starting') {
-        showToast('Instance is still starting, please wait...', 'info');
+        showToast('Demo is still starting, please wait...', 'info');
     } else {
-        if (state.authenticated) {
-            deployProject(projectId);
-        } else {
-            showAuthModal(projectId, project);
+        if (state.deploymentsRemaining <= 0) {
+            showToast('Demo limit reached. Please try again later.', 'warning');
+            return;
         }
+        showDeployModal(projectId, project);
     }
 }
 
-async function handleAuthSubmit(e) {
+async function handleDeploySubmit(e) {
     e.preventDefault();
 
-    const password = elements.passwordInput.value;
+    const name = document.getElementById('recruiterName').value.trim();
+    const email = document.getElementById('recruiterEmail').value.trim();
+    const company = document.getElementById('recruiterCompany').value.trim();
+
     const captchaResponse = typeof grecaptcha !== 'undefined'
         ? grecaptcha.getResponse()
         : 'dev-mode';
 
     if (!captchaResponse) {
-        elements.authError.textContent = 'Please complete the CAPTCHA';
-        elements.authError.classList.add('show');
+        elements.deployError.textContent = 'Please complete the CAPTCHA';
+        elements.deployError.classList.add('show');
         return;
     }
 
-    const submitBtn = document.getElementById('authSubmit');
+    const submitBtn = document.getElementById('deploySubmit');
     submitBtn.disabled = true;
     submitBtn.querySelector('.btn-text').style.display = 'none';
     submitBtn.querySelector('.btn-loader').style.display = 'flex';
 
     try {
-        await authenticate(password, captchaResponse);
-        hideAuthModal();
-        showToast('Authenticated successfully!', 'success');
+        const result = await deployProject(state.selectedProject, {
+            name,
+            email,
+            company,
+            captcha_response: captchaResponse
+        });
 
-        // Now deploy the project
-        if (state.selectedProject) {
-            await deployProject(state.selectedProject);
-        }
+        hideDeployModal();
+        showToast(`🚀 Starting ${state.projects[state.selectedProject].name}...`, 'success');
+
+        // Update UI
+        updateProjectCard(state.selectedProject, {
+            status: 'starting',
+            external_ip: result.external_ip
+        });
+
+        // Refresh data
+        await loadProjects();
+        await checkActiveInstance();
+        await updateRateLimitDisplay();
+
     } catch (error) {
-        elements.authError.textContent = error.message;
-        elements.authError.classList.add('show');
+        elements.deployError.textContent = error.message;
+        elements.deployError.classList.add('show');
 
         if (typeof grecaptcha !== 'undefined') {
             grecaptcha.reset();
@@ -420,60 +445,46 @@ async function handleAuthSubmit(e) {
     }
 }
 
-async function deployProject(projectId) {
-    const project = state.projects[projectId];
-
-    showToast(`Starting deployment for ${project.name}...`, 'info');
-    updateProjectCard(projectId, { status: 'starting' });
-
-    try {
-        const result = await startInstance(projectId);
-
-        if (result.success) {
-            showToast(`Instance started! IP: ${result.external_ip}`, 'success');
-            updateProjectCard(projectId, {
-                status: 'running',
-                external_ip: result.external_ip,
-                expires_at: result.expires_at
-            });
-
-            // Show instance modal
-            showInstanceModal(projectId, {
-                ...project,
-                status: 'running',
-                external_ip: result.external_ip,
-                expires_at: result.expires_at
-            });
-        }
-    } catch (error) {
-        showToast(`Deployment failed: ${error.message}`, 'error');
-        updateProjectCard(projectId, { status: 'not_running' });
-    }
-}
-
-async function handleStopInstance() {
-    if (!state.selectedProject) return;
-
-    const projectId = state.selectedProject;
-    const project = state.projects[projectId];
-
-    if (!confirm(`Are you sure you want to stop and delete the instance for ${project.name}?`)) {
+async function handleTerminate() {
+    if (!confirm('Are you sure you want to stop the current demo?')) {
         return;
     }
 
-    showToast('Stopping instance...', 'info');
+    showToast('Stopping demo...', 'info');
 
     try {
-        await stopInstance(projectId);
-        showToast('Instance stopped and deleted', 'success');
-        hideInstanceModal();
-        updateProjectCard(projectId, {
-            status: 'not_running',
-            external_ip: null,
-            expires_at: null
-        });
+        await terminateInstance();
+        showToast('Demo stopped successfully', 'success');
+
+        state.activeInstance = null;
+        updateActiveInstanceBanner();
+        await loadProjects();
     } catch (error) {
-        showToast(`Failed to stop instance: ${error.message}`, 'error');
+        showToast(`Failed to stop: ${error.message}`, 'error');
+    }
+}
+
+async function handleStopFromModal() {
+    if (!state.selectedProject) return;
+
+    const project = state.projects[state.selectedProject];
+
+    if (!confirm(`Are you sure you want to stop the ${project.name} demo?`)) {
+        return;
+    }
+
+    showToast('Stopping demo...', 'info');
+
+    try {
+        await terminateInstance();
+        showToast('Demo stopped successfully', 'success');
+        hideInstanceModal();
+
+        state.activeInstance = null;
+        updateActiveInstanceBanner();
+        await loadProjects();
+    } catch (error) {
+        showToast(`Failed to stop: ${error.message}`, 'error');
     }
 }
 
@@ -481,25 +492,25 @@ async function handleStopInstance() {
 // UTILITY FUNCTIONS
 // ============================================
 
-function updateAuthStatus() {
-    const statusDot = elements.authStatus.querySelector('.status-dot');
-
-    if (state.authenticated) {
-        statusDot.classList.remove('offline');
-        statusDot.classList.add('online');
-        elements.authStatus.innerHTML = '<span class="status-dot online"></span>Authenticated';
-        elements.logoutBtn.style.display = 'flex';
-    } else {
-        statusDot.classList.remove('online');
-        statusDot.classList.add('offline');
-        elements.authStatus.innerHTML = '<span class="status-dot offline"></span>Not Authenticated';
-        elements.logoutBtn.style.display = 'none';
-    }
-}
-
 function getCSRFToken() {
     const metaTag = document.querySelector('meta[name="csrf-token"]');
     return metaTag ? metaTag.content : '';
+}
+
+function formatTimeUntil(isoString) {
+    if (!isoString) return 'soon';
+
+    const target = new Date(isoString);
+    const now = new Date();
+    const diff = target - now;
+
+    if (diff <= 0) return 'now';
+
+    const minutes = Math.ceil(diff / (1000 * 60));
+    if (minutes < 60) return `in ${minutes} minutes`;
+
+    const hours = Math.floor(minutes / 60);
+    return `in ${hours} hour${hours !== 1 ? 's' : ''}`;
 }
 
 function showToast(message, type = 'info') {
@@ -528,15 +539,22 @@ function showToast(message, type = 'info') {
 
 function startStatusPolling() {
     state.statusPollingInterval = setInterval(async () => {
+        await checkActiveInstance();
+
         for (const [projectId, project] of Object.entries(state.projects)) {
             if (project.status === 'starting' || project.status === 'running') {
-                const status = await getInstanceStatus(projectId);
-                if (status.status !== project.status) {
-                    updateProjectCard(projectId, status);
+                const response = await fetch('/api/projects');
+                if (response.ok) {
+                    const updated = await response.json();
+                    if (updated[projectId]) {
+                        updateProjectCard(projectId, updated[projectId]);
+                    }
                 }
             }
         }
-    }, 10000); // Poll every 10 seconds
+
+        updateActiveInstanceBanner();
+    }, 10000);
 }
 
 // Cleanup on page unload

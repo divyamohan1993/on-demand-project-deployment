@@ -5,12 +5,12 @@ On-Demand Project Deployment Orchestrator
 A secure web application to manage on-demand GCP spot instances for project demos.
 
 Security Features:
-- CAPTCHA verification (hCaptcha)
-- Password protection (hashed)
-- Rate limiting
+- reCAPTCHA verification (Google reCAPTCHA v2)
+- Recruiter details collection (audit trail)
+- GLOBAL rate limiting (max 3 VMs per hour, regardless of IP)
+- Single VM at a time (auto-terminate previous)
 - CSRF protection
 - No user input for commands - all hardcoded
-- Session management
 - Request validation
 """
 
@@ -29,6 +29,7 @@ from flask_limiter.util import get_remote_address
 from flask_wtf.csrf import CSRFProtect
 import requests
 from dotenv import load_dotenv
+import re
 
 # Load environment variables
 load_dotenv()
@@ -37,17 +38,13 @@ load_dotenv()
 # CONFIGURATION - LOADED FROM ENVIRONMENT
 # ============================================
 
-# Master password hash (SHA-256 of your password)
-# Generate with: echo -n "YOUR_PASSWORD" | sha256sum
-MASTER_PASSWORD_HASH = os.environ.get("MASTER_PASSWORD_HASH", "")
-
 # Google reCAPTCHA Configuration
 RECAPTCHA_SITE_KEY = os.environ.get("RECAPTCHA_SITE_KEY", "6LegWV0sAAAAAFzlySHz_4EZQXjsRCq4D1F8Un6h")
 RECAPTCHA_SECRET_KEY = os.environ.get("RECAPTCHA_SECRET_KEY", "")
 
 # GCP Configuration
 GCP_PROJECT_ID = os.environ.get("GCP_PROJECT_ID", "")
-GCP_ZONE = os.environ.get("GCP_ZONE", "us-east1-c")  # Match orchestrator VM zone
+GCP_ZONE = os.environ.get("GCP_ZONE", "us-east1-c")
 GCP_MACHINE_TYPE = os.environ.get("GCP_MACHINE_TYPE", "e2-micro")
 SPOT_INSTANCE_LIFETIME_HOURS = int(os.environ.get("SPOT_INSTANCE_LIFETIME_HOURS", "2"))
 
@@ -55,16 +52,81 @@ SPOT_INSTANCE_LIFETIME_HOURS = int(os.environ.get("SPOT_INSTANCE_LIFETIME_HOURS"
 SECRET_KEY = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 
 # ============================================
+# GLOBAL RATE LIMITING - HARD LIMITS
+# ============================================
+# These limits apply GLOBALLY, not per-IP, to prevent wallet drainage
+
+MAX_DEPLOYMENTS_PER_HOUR = 3  # Maximum 3 VMs can be started per hour globally
+DEPLOYMENT_LOG_FILE = "/opt/project-orchestrator/deployment_log.json"
+
+def load_deployment_log():
+    """Load deployment timestamps from persistent storage"""
+    try:
+        if os.path.exists(DEPLOYMENT_LOG_FILE):
+            with open(DEPLOYMENT_LOG_FILE, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"Error loading deployment log: {e}")
+    return {"deployments": [], "recruiters": []}
+
+def save_deployment_log(log_data):
+    """Save deployment timestamps to persistent storage"""
+    try:
+        os.makedirs(os.path.dirname(DEPLOYMENT_LOG_FILE), exist_ok=True)
+        with open(DEPLOYMENT_LOG_FILE, 'w') as f:
+            json.dump(log_data, f, indent=2)
+    except Exception as e:
+        print(f"Error saving deployment log: {e}")
+
+def check_global_rate_limit():
+    """
+    Check if we've exceeded the global rate limit.
+    Returns (allowed: bool, remaining: int, reset_time: str)
+    """
+    log_data = load_deployment_log()
+    deployments = log_data.get("deployments", [])
+    
+    # Filter deployments from the last hour
+    one_hour_ago = (datetime.now() - timedelta(hours=1)).isoformat()
+    recent_deployments = [d for d in deployments if d > one_hour_ago]
+    
+    # Update the log with only recent deployments
+    log_data["deployments"] = recent_deployments
+    save_deployment_log(log_data)
+    
+    remaining = MAX_DEPLOYMENTS_PER_HOUR - len(recent_deployments)
+    
+    if len(recent_deployments) >= MAX_DEPLOYMENTS_PER_HOUR:
+        # Calculate when the oldest deployment will expire
+        oldest = min(recent_deployments)
+        reset_time = (datetime.fromisoformat(oldest) + timedelta(hours=1)).isoformat()
+        return False, 0, reset_time
+    
+    return True, remaining, None
+
+def record_deployment(recruiter_info):
+    """Record a deployment for rate limiting and audit"""
+    log_data = load_deployment_log()
+    
+    # Add deployment timestamp
+    log_data.setdefault("deployments", []).append(datetime.now().isoformat())
+    
+    # Add recruiter info for audit trail
+    recruiter_entry = {
+        **recruiter_info,
+        "timestamp": datetime.now().isoformat(),
+        "ip": request.remote_addr
+    }
+    log_data.setdefault("recruiters", []).append(recruiter_entry)
+    
+    save_deployment_log(log_data)
+
+# ============================================
 # HARDCODED PROJECTS - NO USER INPUT ALLOWED
-# Environment variables are embedded securely
-# Additional secrets loaded from /opt/project-orchestrator/secrets/
 # ============================================
 
 def load_project_secrets(project_id):
-    """
-    Load additional project-specific secrets from encrypted storage.
-    Returns dict of env vars or empty dict if not found.
-    """
+    """Load additional project-specific secrets from encrypted storage."""
     secrets_file = f"/opt/project-orchestrator/secrets/projects/{project_id}.env"
     try:
         if os.path.exists(secrets_file):
@@ -111,25 +173,17 @@ PROJECTS = {
 }
 
 def get_project_env_vars(project_id):
-    """
-    Get environment variables for a project.
-    Loads from secure vault if available, falls back to defaults.
-    """
+    """Get environment variables for a project."""
     project = PROJECTS.get(project_id)
     if not project:
         return {}
-    
-    # Start with defaults
     env_vars = project.get("env_vars", {}).copy()
-    
-    # Load additional secrets from encrypted storage
     secret_vars = load_project_secrets(project_id)
     env_vars.update(secret_vars)
-    
     return env_vars
 
-# Instance tracking (in production, use Redis/database)
-ACTIVE_INSTANCES = {}
+# Instance tracking - only ONE can be active at a time
+ACTIVE_INSTANCE = None  # Global single instance tracker
 
 # ============================================
 # FLASK APP INITIALIZATION
@@ -139,20 +193,36 @@ app = Flask(__name__, template_folder='../templates', static_folder='../static')
 app.secret_key = SECRET_KEY
 csrf = CSRFProtect(app)
 
-# Rate limiting
+# Per-IP rate limiting (additional layer)
 limiter = Limiter(
-    key_func=get_remote_address,
+    key_func=get_remote_addr,
     app=app,
     default_limits=["100 per hour", "20 per minute"],
     storage_uri="memory://"
 )
 
 # ============================================
-# SECURITY DECORATORS
+# VALIDATION FUNCTIONS
 # ============================================
+
+def validate_email(email):
+    """Basic email validation"""
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return bool(re.match(pattern, email))
+
+def validate_name(name):
+    """Basic name validation - letters, spaces, hyphens only"""
+    if not name or len(name) < 2 or len(name) > 100:
+        return False
+    pattern = r'^[a-zA-Z\s\-\.]+$'
+    return bool(re.match(pattern, name))
 
 def verify_captcha(captcha_response):
     """Verify Google reCAPTCHA response"""
+    if not RECAPTCHA_SECRET_KEY:
+        print("Warning: reCAPTCHA secret key not configured")
+        return False
+    
     try:
         response = requests.post(
             "https://www.google.com/recaptcha/api/siteverify",
@@ -168,26 +238,6 @@ def verify_captcha(captcha_response):
         print(f"reCAPTCHA verification error: {e}")
         return False
 
-def verify_password(password):
-    """Verify password against stored hash"""
-    password_hash = hashlib.sha256(password.encode()).hexdigest()
-    return secrets.compare_digest(password_hash, MASTER_PASSWORD_HASH)
-
-def require_auth(f):
-    """Decorator to require authentication"""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if not session.get('authenticated'):
-            return jsonify({"error": "Authentication required"}), 401
-        # Check session expiry (30 minutes)
-        if session.get('auth_time'):
-            auth_time = datetime.fromisoformat(session['auth_time'])
-            if datetime.now() - auth_time > timedelta(minutes=30):
-                session.clear()
-                return jsonify({"error": "Session expired"}), 401
-        return f(*args, **kwargs)
-    return decorated_function
-
 # ============================================
 # GCP INSTANCE MANAGEMENT
 # ============================================
@@ -198,7 +248,6 @@ def generate_startup_script(project_id):
     if not project:
         return None
     
-    # Load env vars from secure vault (with fallback to defaults)
     env_vars = get_project_env_vars(project_id)
     env_vars_str = "\n".join([f'{k}="{v}"' for k, v in env_vars.items()])
     
@@ -220,7 +269,6 @@ USERNAME="deployer"
 
 # Create user if missing
 if ! id "$USERNAME" &>/dev/null; then
-    echo "Creating user $USERNAME..."
     useradd -m -s /bin/bash "$USERNAME"
     echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/deployer-init
     chmod 440 /etc/sudoers.d/deployer-init
@@ -241,7 +289,6 @@ sudo -u "$USERNAME" bash <<'EOF'
     fi
 
     # Clone the repo
-    echo "Cloning repository..."
     git clone {project["github_url"]} "$APP_DIR"
     cd "$APP_DIR"
 
@@ -260,13 +307,76 @@ echo "Startup script completed for {project["name"]}"
 '''
     return startup_script
 
-def create_spot_instance(project_id):
-    """Create a spot VM instance for a project"""
+def terminate_all_instances():
+    """Terminate ALL active demo instances - ensures only 1 VM at a time"""
+    global ACTIVE_INSTANCE
+    
+    terminated = []
+    
+    # First, terminate tracked instance
+    if ACTIVE_INSTANCE:
+        try:
+            instance_name = ACTIVE_INSTANCE.get("instance_name")
+            if instance_name:
+                cmd = [
+                    "gcloud", "compute", "instances", "delete", instance_name,
+                    f"--project={GCP_PROJECT_ID}",
+                    f"--zone={GCP_ZONE}",
+                    "--quiet"
+                ]
+                subprocess.run(cmd, capture_output=True, timeout=60)
+                terminated.append(instance_name)
+        except Exception as e:
+            print(f"Error terminating tracked instance: {e}")
+        ACTIVE_INSTANCE = None
+    
+    # Also scan for any demo instances that might exist
+    try:
+        list_cmd = [
+            "gcloud", "compute", "instances", "list",
+            f"--project={GCP_PROJECT_ID}",
+            "--filter=name~^demo-",
+            "--format=json"
+        ]
+        result = subprocess.run(list_cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode == 0 and result.stdout:
+            instances = json.loads(result.stdout)
+            for inst in instances:
+                name = inst.get("name")
+                zone = inst.get("zone", "").split("/")[-1]
+                if name and name.startswith("demo-"):
+                    try:
+                        del_cmd = [
+                            "gcloud", "compute", "instances", "delete", name,
+                            f"--project={GCP_PROJECT_ID}",
+                            f"--zone={zone}",
+                            "--quiet"
+                        ]
+                        subprocess.run(del_cmd, capture_output=True, timeout=60)
+                        terminated.append(name)
+                    except Exception as e:
+                        print(f"Error deleting instance {name}: {e}")
+    except Exception as e:
+        print(f"Error listing instances: {e}")
+    
+    return terminated
+
+def create_spot_instance(project_id, recruiter_info):
+    """Create a new spot instance for a project"""
+    global ACTIVE_INSTANCE
+    
     project = PROJECTS.get(project_id)
     if not project:
-        return {"error": "Project not found"}
+        return {"error": "Invalid project"}
     
-    instance_name = f"demo-{project_id}-{int(time.time())}"
+    # FIRST: Terminate any existing instances
+    terminated = terminate_all_instances()
+    if terminated:
+        print(f"Terminated previous instances: {terminated}")
+    
+    # Generate unique instance name
+    timestamp = int(time.time())
+    instance_name = f"demo-{project_id}-{timestamp}"
     
     # Generate startup script
     startup_script = generate_startup_script(project_id)
@@ -274,7 +384,6 @@ def create_spot_instance(project_id):
         return {"error": "Failed to generate startup script"}
     
     try:
-        # Create instance using gcloud CLI
         cmd = [
             "gcloud", "compute", "instances", "create", instance_name,
             f"--project={GCP_PROJECT_ID}",
@@ -297,39 +406,49 @@ def create_spot_instance(project_id):
         if result.returncode != 0:
             return {"error": f"Failed to create instance: {result.stderr}"}
         
-        instance_info = json.loads(result.stdout)[0]
-        external_ip = None
+        # Parse the result
+        instance_info = json.loads(result.stdout)
+        if isinstance(instance_info, list):
+            instance_info = instance_info[0]
         
         # Get external IP
-        for interface in instance_info.get("networkInterfaces", []):
-            for access in interface.get("accessConfigs", []):
-                external_ip = access.get("natIP")
-                break
+        network_interfaces = instance_info.get("networkInterfaces", [])
+        external_ip = None
+        if network_interfaces:
+            access_configs = network_interfaces[0].get("accessConfigs", [])
+            if access_configs:
+                external_ip = access_configs[0].get("natIP")
         
-        # Track the instance
-        ACTIVE_INSTANCES[project_id] = {
+        expires_at = (datetime.now() + timedelta(hours=SPOT_INSTANCE_LIFETIME_HOURS)).isoformat()
+        
+        # Track this instance as THE active instance
+        ACTIVE_INSTANCE = {
+            "project_id": project_id,
             "instance_name": instance_name,
             "external_ip": external_ip,
             "created_at": datetime.now().isoformat(),
-            "expires_at": (datetime.now() + timedelta(hours=SPOT_INSTANCE_LIFETIME_HOURS)).isoformat(),
-            "status": "starting",
-            "project": project
+            "expires_at": expires_at,
+            "project": project,
+            "recruiter": recruiter_info
         }
         
-        # Schedule auto-deletion
-        def auto_delete():
-            time.sleep(SPOT_INSTANCE_LIFETIME_HOURS * 3600)
-            delete_instance(project_id)
+        # Record for rate limiting
+        record_deployment(recruiter_info)
         
-        thread = threading.Thread(target=auto_delete, daemon=True)
-        thread.start()
+        # Schedule auto-termination
+        def auto_terminate():
+            time.sleep(SPOT_INSTANCE_LIFETIME_HOURS * 3600)
+            terminate_all_instances()
+        
+        threading.Thread(target=auto_terminate, daemon=True).start()
         
         return {
             "success": True,
             "instance_name": instance_name,
             "external_ip": external_ip,
             "port": project["port"],
-            "expires_at": ACTIVE_INSTANCES[project_id]["expires_at"]
+            "expires_at": expires_at,
+            "message": f"Instance created. It will be ready in 2-3 minutes."
         }
         
     except subprocess.TimeoutExpired:
@@ -337,44 +456,17 @@ def create_spot_instance(project_id):
     except Exception as e:
         return {"error": str(e)}
 
-def delete_instance(project_id):
-    """Delete a running instance"""
-    if project_id not in ACTIVE_INSTANCES:
-        return {"error": "No active instance found"}
+def get_active_instance_status():
+    """Get status of the currently active instance"""
+    global ACTIVE_INSTANCE
     
-    instance_info = ACTIVE_INSTANCES[project_id]
-    instance_name = instance_info["instance_name"]
-    
-    try:
-        cmd = [
-            "gcloud", "compute", "instances", "delete", instance_name,
-            f"--project={GCP_PROJECT_ID}",
-            f"--zone={GCP_ZONE}",
-            "--quiet"
-        ]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        
-        if result.returncode == 0:
-            del ACTIVE_INSTANCES[project_id]
-            return {"success": True}
-        else:
-            return {"error": f"Failed to delete: {result.stderr}"}
-            
-    except Exception as e:
-        return {"error": str(e)}
-
-def get_instance_status(project_id):
-    """Get the status of an instance"""
-    if project_id not in ACTIVE_INSTANCES:
-        return {"status": "not_running"}
-    
-    instance_info = ACTIVE_INSTANCES[project_id]
-    instance_name = instance_info["instance_name"]
+    if not ACTIVE_INSTANCE:
+        return {"status": "not_running", "active_instance": None}
     
     try:
         cmd = [
-            "gcloud", "compute", "instances", "describe", instance_name,
+            "gcloud", "compute", "instances", "describe",
+            ACTIVE_INSTANCE["instance_name"],
             f"--project={GCP_PROJECT_ID}",
             f"--zone={GCP_ZONE}",
             "--format=json"
@@ -383,29 +475,44 @@ def get_instance_status(project_id):
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         
         if result.returncode != 0:
-            # Instance no longer exists
-            if project_id in ACTIVE_INSTANCES:
-                del ACTIVE_INSTANCES[project_id]
-            return {"status": "not_running"}
+            ACTIVE_INSTANCE = None
+            return {"status": "not_running", "active_instance": None}
         
-        gcp_status = json.loads(result.stdout).get("status", "UNKNOWN")
+        instance_data = json.loads(result.stdout)
+        gcp_status = instance_data.get("status", "UNKNOWN")
+        
+        # Get current external IP
+        network_interfaces = instance_data.get("networkInterfaces", [])
+        external_ip = None
+        if network_interfaces:
+            access_configs = network_interfaces[0].get("accessConfigs", [])
+            if access_configs:
+                external_ip = access_configs[0].get("natIP")
+        
+        ACTIVE_INSTANCE["external_ip"] = external_ip
         
         status_map = {
             "RUNNING": "running",
             "STAGING": "starting",
             "PROVISIONING": "starting",
             "STOPPING": "stopping",
-            "TERMINATED": "terminated"
+            "TERMINATED": "not_running"
         }
         
         return {
             "status": status_map.get(gcp_status, "unknown"),
-            "external_ip": instance_info.get("external_ip"),
-            "port": instance_info["project"]["port"],
-            "expires_at": instance_info["expires_at"]
+            "active_instance": {
+                "project_id": ACTIVE_INSTANCE["project_id"],
+                "project_name": ACTIVE_INSTANCE["project"]["name"],
+                "external_ip": external_ip,
+                "port": ACTIVE_INSTANCE["project"]["port"],
+                "expires_at": ACTIVE_INSTANCE["expires_at"],
+                "created_at": ACTIVE_INSTANCE["created_at"]
+            }
         }
         
     except Exception as e:
+        print(f"Error getting instance status: {e}")
         return {"status": "error", "error": str(e)}
 
 # ============================================
@@ -415,106 +522,132 @@ def get_instance_status(project_id):
 @app.route('/')
 def index():
     """Serve the main page"""
+    allowed, remaining, reset_time = check_global_rate_limit()
     return render_template('index.html', 
                          projects=PROJECTS,
-                         recaptcha_site_key=RECAPTCHA_SITE_KEY)
+                         recaptcha_site_key=RECAPTCHA_SITE_KEY,
+                         deployments_remaining=remaining,
+                         rate_limit_reset=reset_time)
 
 @app.route('/api/projects')
 def get_projects():
-    """Get all projects with their status"""
+    """Get all projects with current status"""
+    active_status = get_active_instance_status()
+    
     projects_with_status = {}
     for project_id, project in PROJECTS.items():
-        status = get_instance_status(project_id)
+        status = "not_running"
+        external_ip = None
+        expires_at = None
+        
+        # Check if this is the active project
+        if active_status.get("active_instance"):
+            active = active_status["active_instance"]
+            if active["project_id"] == project_id:
+                status = active_status["status"]
+                external_ip = active.get("external_ip")
+                expires_at = active.get("expires_at")
+        
         projects_with_status[project_id] = {
             **project,
-            **status
+            "status": status,
+            "external_ip": external_ip,
+            "expires_at": expires_at
         }
+    
     return jsonify(projects_with_status)
 
-@app.route('/api/auth', methods=['POST'])
-@limiter.limit("5 per minute")
-def authenticate():
-    """Authenticate with CAPTCHA and password"""
-    data = request.get_json()
-    
-    # Validate CAPTCHA
-    captcha_response = data.get('captcha_response')
-    if not captcha_response:
-        return jsonify({"error": "CAPTCHA required"}), 400
-    
-    if not verify_captcha(captcha_response):
-        return jsonify({"error": "CAPTCHA verification failed"}), 400
-    
-    # Validate password
-    password = data.get('password')
-    if not password:
-        return jsonify({"error": "Password required"}), 400
-    
-    if not verify_password(password):
-        return jsonify({"error": "Invalid password"}), 401
-    
-    # Set session
-    session['authenticated'] = True
-    session['auth_time'] = datetime.now().isoformat()
-    
-    return jsonify({"success": True})
+@app.route('/api/rate-limit')
+def get_rate_limit():
+    """Get current rate limit status"""
+    allowed, remaining, reset_time = check_global_rate_limit()
+    return jsonify({
+        "allowed": allowed,
+        "remaining": remaining,
+        "max_per_hour": MAX_DEPLOYMENTS_PER_HOUR,
+        "reset_time": reset_time
+    })
 
-@app.route('/api/instance/<project_id>/start', methods=['POST'])
-@limiter.limit("3 per hour")
-@require_auth
-def start_instance(project_id):
-    """Start a new instance for a project"""
-    # Validate project_id is in our hardcoded list
-    if project_id not in PROJECTS:
-        return jsonify({"error": "Invalid project"}), 400
-    
-    # Check if already running
-    if project_id in ACTIVE_INSTANCES:
-        status = get_instance_status(project_id)
-        if status["status"] in ["running", "starting"]:
-            return jsonify({"error": "Instance already running", **status}), 409
-    
-    result = create_spot_instance(project_id)
-    
-    if "error" in result:
-        return jsonify(result), 500
-    
-    return jsonify(result)
+@app.route('/api/active-instance')
+def get_active():
+    """Get the currently active instance"""
+    return jsonify(get_active_instance_status())
 
-@app.route('/api/instance/<project_id>/stop', methods=['POST'])
-@require_auth
-def stop_instance(project_id):
-    """Stop and delete an instance"""
+@app.route('/api/deploy/<project_id>', methods=['POST'])
+@limiter.limit("5 per minute")  # Per-IP limit on top of global limit
+def deploy_project(project_id):
+    """Deploy a project - requires CAPTCHA and recruiter info"""
+    
     # Validate project_id
     if project_id not in PROJECTS:
         return jsonify({"error": "Invalid project"}), 400
     
-    result = delete_instance(project_id)
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Invalid request"}), 400
+    
+    # Validate CAPTCHA
+    captcha_response = data.get('captcha_response')
+    if not captcha_response:
+        return jsonify({"error": "Please complete the CAPTCHA"}), 400
+    
+    if not verify_captcha(captcha_response):
+        return jsonify({"error": "CAPTCHA verification failed. Please try again."}), 400
+    
+    # Validate recruiter info
+    name = data.get('name', '').strip()
+    email = data.get('email', '').strip()
+    company = data.get('company', '').strip()
+    
+    if not validate_name(name):
+        return jsonify({"error": "Please enter a valid name (2-100 characters, letters only)"}), 400
+    
+    if not validate_email(email):
+        return jsonify({"error": "Please enter a valid email address"}), 400
+    
+    # Check global rate limit
+    allowed, remaining, reset_time = check_global_rate_limit()
+    if not allowed:
+        return jsonify({
+            "error": f"Demo limit reached. Only {MAX_DEPLOYMENTS_PER_HOUR} demos can be started per hour. Please try again later.",
+            "reset_time": reset_time
+        }), 429
+    
+    # All checks passed - deploy!
+    recruiter_info = {
+        "name": name,
+        "email": email,
+        "company": company
+    }
+    
+    result = create_spot_instance(project_id, recruiter_info)
     
     if "error" in result:
         return jsonify(result), 500
     
     return jsonify(result)
 
-@app.route('/api/instance/<project_id>/status')
-def instance_status(project_id):
-    """Get instance status"""
-    if project_id not in PROJECTS:
-        return jsonify({"error": "Invalid project"}), 400
+@app.route('/api/terminate', methods=['POST'])
+@limiter.limit("10 per minute")
+def terminate_current():
+    """Terminate the currently active instance"""
+    data = request.get_json()
     
-    return jsonify(get_instance_status(project_id))
-
-@app.route('/api/logout', methods=['POST'])
-def logout():
-    """Clear session"""
-    session.clear()
-    return jsonify({"success": True})
+    # Still require CAPTCHA to prevent bot abuse
+    captcha_response = data.get('captcha_response') if data else None
+    if captcha_response and not verify_captcha(captcha_response):
+        return jsonify({"error": "CAPTCHA verification failed"}), 400
+    
+    terminated = terminate_all_instances()
+    
+    if terminated:
+        return jsonify({"success": True, "terminated": terminated})
+    else:
+        return jsonify({"success": True, "message": "No active instances"})
 
 # ============================================
 # MAIN
 # ============================================
 
 if __name__ == '__main__':
-    # Production: use gunicorn
-    # Development:
     app.run(host='0.0.0.0', port=5000, debug=False)

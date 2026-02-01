@@ -299,18 +299,9 @@ generate_all_keys() {
     local secrets_file="$APP_DIR/.env"
     local vault_key_file="$VAULT_DIR/keys/vault.key"
     
-    # Generate master password
-    log "Generating master password..."
-    local master_password=$(generate_secure_password)
-    local master_password_hash=$(generate_sha256_hash "$master_password")
-    
     # Generate Flask secret key
     log "Generating Flask secret key..."
     local flask_secret=$(generate_secure_key)
-    
-    # Generate vault encryption key
-    log "Generating vault encryption key..."
-    local vault_key=$(generate_secure_key)
     
     # Get GCP project ID
     local gcp_project_id=""
@@ -330,12 +321,9 @@ generate_all_keys() {
 # NEVER commit this file to version control
 # ============================================
 
-# Master Password Hash (SHA-256)
-MASTER_PASSWORD_HASH=$master_password_hash
-
-# Google reCAPTCHA
+# Google reCAPTCHA (REQUIRED)
 RECAPTCHA_SITE_KEY=$RECAPTCHA_SITE_KEY
-# NOTE: Add your reCAPTCHA SECRET key below
+# ADD YOUR SECRET KEY BELOW:
 RECAPTCHA_SECRET_KEY=
 
 # GCP Configuration
@@ -359,35 +347,20 @@ EOF
     chmod 600 "$secrets_file"
     chown root:root "$secrets_file"
     
-    # Store vault key
+    # Store vault key for future encrypted secrets
     if [ -f "$vault_key_file" ]; then
         log "Vault encryption key already exists, preserving..."
     else
         log "Generating vault encryption key..."
+        local vault_key=$(generate_secure_key)
         echo "$vault_key" > "$vault_key_file"
         chmod 400 "$vault_key_file"
         chown root:root "$vault_key_file"
-        # Make vault key immutable
         chattr +i "$vault_key_file" 2>/dev/null || true
     fi
     
-    # Store master password securely (for initial access only)
-    local password_file="$VAULT_DIR/keys/.master_password_INITIAL_DELETE_AFTER_READING"
-    echo "============================================" > "$password_file"
-    echo "MASTER PASSWORD - DELETE THIS FILE AFTER READING" >> "$password_file"
-    echo "============================================" >> "$password_file"
-    echo "" >> "$password_file"
-    echo "Your master password is:" >> "$password_file"
-    echo "$master_password" >> "$password_file"
-    echo "" >> "$password_file"
-    echo "This password is required to authenticate on the web interface." >> "$password_file"
-    echo "SAVE THIS PASSWORD SECURELY AND DELETE THIS FILE!" >> "$password_file"
-    echo "" >> "$password_file"
-    echo "To delete: sudo rm $password_file" >> "$password_file"
-    chmod 400 "$password_file"
-    
     log_success "All keys generated securely"
-    log_warning "IMPORTANT: Read and delete $password_file after saving the password!"
+    log_warning "IMPORTANT: Add your reCAPTCHA SECRET key to $secrets_file"
 }
 
 # ============================================
@@ -684,11 +657,10 @@ print_summary() {
     log_section "SETUP COMPLETE"
     
     local server_ip=$(curl -s http://checkip.amazonaws.com 2>/dev/null || echo "Unknown")
-    local password_file="$VAULT_DIR/keys/.master_password_INITIAL_DELETE_AFTER_READING"
     
     echo ""
     echo "========================================"
-    echo " ON-DEMAND PROJECT DEPLOYMENT ORCHESTRATOR"
+    echo " PROJECT DEMO DEPLOYMENT ORCHESTRATOR"
     echo " Setup Complete!"
     echo "========================================"
     echo ""
@@ -701,33 +673,36 @@ print_summary() {
     echo "  • Swap: $(swapon --show | grep -q swapfile && echo 'Enabled (4GB)' || echo 'Not configured')"
     echo "  • Firewall: $(ufw status | grep -q 'active' && echo 'Active' || echo 'Inactive')"
     echo "  • Fail2Ban: $(systemctl is-active fail2ban)"
-    echo "  • Vault: Encrypted (AES-256)"
+    echo "  • Rate Limit: 3 VMs per hour (global)"
     echo ""
     echo "Services:"
     echo "  • Orchestrator: $(systemctl is-active project-orchestrator)"
     echo "  • Nginx: $(systemctl is-active nginx)"
     echo ""
-    echo "========================================" 
-    echo " IMPORTANT - ACTION REQUIRED"
+    echo "========================================"
+    echo " REQUIRED: ADD RECAPTCHA SECRET KEY"
     echo "========================================"
     echo ""
-    echo "1. GET YOUR MASTER PASSWORD:"
-    echo "   sudo cat $password_file"
-    echo ""
-    echo "2. SAVE THE PASSWORD SECURELY, THEN DELETE:"
-    echo "   sudo rm $password_file"
-    echo ""
-    echo "3. ADD YOUR reCAPTCHA SECRET KEY:"
+    echo "1. Edit the configuration file:"
     echo "   sudo nano $APP_DIR/.env"
-    echo "   (Add the RECAPTCHA_SECRET_KEY value)"
     echo ""
-    echo "4. RESTART SERVICE AFTER ADDING SECRET KEY:"
+    echo "2. Find RECAPTCHA_SECRET_KEY= and add your key"
+    echo "   (Get it from: https://www.google.com/recaptcha/admin)"
+    echo ""
+    echo "3. Restart the service:"
     echo "   sudo systemctl restart project-orchestrator"
     echo ""
-    echo "5. ACCESS YOUR APPLICATION:"
+    echo "4. Access your application:"
     echo "   http://$DOMAIN (or https:// after SSL)"
     echo ""
     echo "========================================"
+    echo ""
+    echo "Security Features:"
+    echo "  ✓ CAPTCHA verification (no password needed)"
+    echo "  ✓ Recruiter info collection (audit trail)"
+    echo "  ✓ Global rate limit: 3 VMs per hour"
+    echo "  ✓ Single VM at a time (auto-terminate)"
+    echo "  ✓ CSRF protection"
     echo ""
     
     # Log completion

@@ -4,10 +4,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="On-Demand Project Deployment Orchestrator - Securely deploy and demo projects with temporary cloud instances">
+    <meta name="description" content="On-Demand Project Deployment Orchestrator - Try my projects with live demo instances">
     <meta name="robots" content="noindex, nofollow">
     <meta name="csrf-token" content="{{ csrf_token() }}">
-    <title>Project Orchestrator | Divya Mohan</title>
+    <title>Project Demos | Divya Mohan</title>
 
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -31,6 +31,9 @@
         <div class="grid-overlay"></div>
     </div>
 
+    <!-- Active Instance Banner -->
+    <div class="active-instance-banner" id="activeInstanceBanner"></div>
+
     <!-- Main Container -->
     <div class="container">
         <!-- Header -->
@@ -45,40 +48,31 @@
                         </svg>
                     </div>
                     <div class="logo-text">
-                        <h1>Project Orchestrator</h1>
-                        <span class="subtitle">On-Demand Demo Deployment</span>
+                        <h1>Project Demos</h1>
+                        <span class="subtitle">by Divya Mohan</span>
                     </div>
                 </div>
                 <div class="header-meta">
-                    <span class="auth-status" id="authStatus">
-                        <span class="status-dot offline"></span>
-                        Not Authenticated
-                    </span>
-                    <button class="btn btn-ghost" id="logoutBtn" style="display: none;">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-                            <polyline points="16,17 21,12 16,7" />
-                            <line x1="21" y1="12" x2="9" y2="12" />
-                        </svg>
-                        Logout
-                    </button>
+                    <div id="rateLimitInfo" class="rate-limit-display">
+                        <span class="rate-limit-ok">✓ {{ deployments_remaining }} demos remaining this hour</span>
+                    </div>
                 </div>
             </div>
         </header>
 
-        <!-- Info Banner -->
-        <div class="info-banner">
-            <div class="banner-icon">ℹ️</div>
+        <!-- Welcome Banner -->
+        <div class="info-banner welcome-banner">
+            <div class="banner-icon">👋</div>
             <div class="banner-content">
-                <strong>Secure Demo Environment</strong>
-                <p>Click on any project card to deploy a temporary instance (2-hour lifetime). All instances are spot VMs and will auto-terminate.</p>
+                <strong>Welcome, Recruiter!</strong>
+                <p>Click on any project below to start a live demo. Each demo runs for 2 hours on a temporary cloud instance. Only one demo can run at a time — starting a new one will stop the current one.</p>
             </div>
         </div>
 
         <!-- Projects Grid -->
         <section class="projects-section">
             <div class="section-header">
-                <h2>Available Projects</h2>
+                <h2>My Projects</h2>
                 <div class="legend">
                     <span class="legend-item"><span class="dot available"></span> Available</span>
                     <span class="legend-item"><span class="dot starting"></span> Starting</span>
@@ -98,56 +92,62 @@
         <!-- Footer -->
         <footer class="footer">
             <p>Built with 🔒 Security First Approach</p>
-            <p class="footer-meta">Divya Mohan | <a href="mailto:divyamohan1993@gmail.com">divyamohan1993@gmail.com</a></p>
+            <p class="footer-meta">Divya Mohan | <a href="mailto:divyamohan1993@gmail.com">divyamohan1993@gmail.com</a> | <a href="https://dmj.one" target="_blank">dmj.one</a></p>
         </footer>
     </div>
 
-    <!-- Authentication Modal -->
-    <div class="modal-overlay" id="authModal">
+    <!-- Deploy Modal (Recruiter Info + CAPTCHA) -->
+    <div class="modal-overlay" id="deployModal">
         <div class="modal">
             <div class="modal-header">
-                <h3>🔐 Authentication Required</h3>
-                <button class="modal-close" id="closeModal">&times;</button>
+                <h3>🚀 Start Demo</h3>
+                <button class="modal-close" id="closeDeployModal">&times;</button>
             </div>
             <div class="modal-body">
-                <p class="modal-description">Complete the security check to deploy <strong id="deployProjectName"></strong></p>
+                <p class="modal-description">Start a live demo of <strong id="deployProjectName"></strong></p>
 
-                <form id="authForm">
-                    <!-- reCAPTCHA -->
+                <div class="replace-warning" id="replaceWarning"></div>
+
+                <form id="deployForm">
+                    <!-- Name -->
                     <div class="form-group">
-                        <label>Security Verification</label>
+                        <label for="recruiterName">Your Name <span class="required">*</span></label>
+                        <input type="text" id="recruiterName" name="name" placeholder="John Doe" required minlength="2" maxlength="100">
+                    </div>
+
+                    <!-- Email -->
+                    <div class="form-group">
+                        <label for="recruiterEmail">Email Address <span class="required">*</span></label>
+                        <input type="email" id="recruiterEmail" name="email" placeholder="john@company.com" required>
+                    </div>
+
+                    <!-- Company (Optional) -->
+                    <div class="form-group">
+                        <label for="recruiterCompany">Company <span class="optional">(optional)</span></label>
+                        <input type="text" id="recruiterCompany" name="company" placeholder="Acme Corp">
+                    </div>
+
+                    <!-- reCAPTCHA -->
+                    <div class="form-group captcha-group">
+                        <label>Security Verification <span class="required">*</span></label>
                         <div class="g-recaptcha" data-sitekey="{{ recaptcha_site_key }}" data-theme="dark"></div>
                     </div>
 
-                    <!-- Password -->
-                    <div class="form-group">
-                        <label for="password">Master Password</label>
-                        <div class="password-input-wrapper">
-                            <input type="password" id="password" name="password" autocomplete="off" required>
-                            <button type="button" class="toggle-password" id="togglePassword">
-                                <svg class="eye-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
-                                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                                    <circle cx="12" cy="12" r="3" />
-                                </svg>
-                                <svg class="eye-closed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20" style="display:none;">
-                                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
-                                    <line x1="1" y1="1" x2="23" y2="23" />
-                                </svg>
-                            </button>
-                        </div>
-                    </div>
-
                     <!-- Error Message -->
-                    <div class="error-message" id="authError"></div>
+                    <div class="error-message" id="deployError"></div>
 
                     <!-- Submit -->
-                    <button type="submit" class="btn btn-primary btn-full" id="authSubmit">
-                        <span class="btn-text">Deploy Instance</span>
+                    <button type="submit" class="btn btn-primary btn-full" id="deploySubmit">
+                        <span class="btn-text">Start Demo Instance</span>
                         <span class="btn-loader" style="display: none;">
                             <div class="spinner small"></div>
                         </span>
                     </button>
                 </form>
+
+                <div class="modal-footer-note">
+                    <p>⏱️ Demo will run for 2 hours • 💰 No cost to you • 🔒 Your info helps prevent abuse</p>
+                </div>
             </div>
         </div>
     </div>
@@ -156,7 +156,7 @@
     <div class="modal-overlay" id="instanceModal">
         <div class="modal modal-instance">
             <div class="modal-header">
-                <h3>🖥️ Instance Details</h3>
+                <h3>🖥️ Demo Running</h3>
                 <button class="modal-close" id="closeInstanceModal">&times;</button>
             </div>
             <div class="modal-body">
@@ -172,9 +172,9 @@
                             <span id="instanceProject">-</span>
                         </div>
                         <div class="detail-item">
-                            <label>External IP</label>
+                            <label>Access URL</label>
                             <div class="ip-display">
-                                <code id="instanceIP">-</code>
+                                <a href="#" id="instanceURL" target="_blank" class="instance-link">-</a>
                                 <button class="btn btn-icon" id="copyIP" title="Copy IP">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
                                         <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
@@ -184,8 +184,8 @@
                             </div>
                         </div>
                         <div class="detail-item">
-                            <label>Access URL</label>
-                            <a href="#" id="instanceURL" target="_blank" class="instance-link">-</a>
+                            <label>External IP</label>
+                            <code id="instanceIP">-</code>
                         </div>
                         <div class="detail-item">
                             <label>Expires At</label>
@@ -204,13 +204,13 @@
                                 <polyline points="15,3 21,3 21,9" />
                                 <line x1="10" y1="14" x2="21" y2="3" />
                             </svg>
-                            Open Application
+                            Open Demo
                         </a>
                         <button class="btn btn-danger" id="stopInstance">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
                                 <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
                             </svg>
-                            Stop & Delete
+                            Stop Demo
                         </button>
                     </div>
                 </div>
