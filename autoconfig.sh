@@ -269,13 +269,15 @@ setup_application() {
     # Get the directory where this script is located
     local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     
-    # Copy application files if running from source
-    if [ -d "$script_dir/server" ]; then
+    # Copy application files if running from source AND not already in target
+    if [ "$script_dir" != "$APP_DIR" ] && [ -d "$script_dir/server" ]; then
         log "Copying application files from source..."
         cp -r "$script_dir/server"/* "$APP_DIR/server/"
         cp -r "$script_dir/static"/* "$APP_DIR/static/"
         cp -r "$script_dir/templates"/* "$APP_DIR/templates/"
         [ -f "$script_dir/requirements.txt" ] && cp "$script_dir/requirements.txt" "$APP_DIR/"
+    else
+        log "Files already in place or running from target directory."
     fi
     
     # Create Python virtual environment
