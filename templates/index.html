@@ -7,15 +7,16 @@
     <meta name="description" content="On-Demand Project Deployment Orchestrator - Try my projects with live demo instances">
     <meta name="robots" content="noindex, nofollow">
     <meta name="csrf-token" content="{{ csrf_token() }}">
+    <meta name="recaptcha-site-key" content="{{ recaptcha_site_key }}">
     <title>Project Demos | Divya Mohan</title>
 
-    <!-- Fonts -->
+    <!-- Fonts - Google Fonts (Inter + JetBrains Mono) -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 
-    <!-- Google reCAPTCHA -->
-    <script src="https://www.google.com/recaptcha/api.js" async defer></script>
+    <!-- reCAPTCHA Enterprise (Score-based, invisible) -->
+    <script src="https://www.google.com/recaptcha/enterprise.js?render={{ recaptcha_site_key }}" async defer></script>
 
     <!-- Styles -->
     <link rel="stylesheet" href="/static/css/main.css">
@@ -64,7 +65,7 @@
         <div class="info-banner welcome-banner">
             <div class="banner-icon">👋</div>
             <div class="banner-content">
-                <strong>Welcome, Recruiter!</strong>
+                <strong>Welcome!</strong>
                 <p>Click on any project below to start a live demo. Each demo runs for 2 hours on a temporary cloud instance. Only one demo can run at a time — starting a new one will stop the current one.</p>
             </div>
         </div>
@@ -93,10 +94,15 @@
         <footer class="footer">
             <p>Built with 🔒 Security First Approach</p>
             <p class="footer-meta">Divya Mohan | <a href="mailto:divyamohan1993@gmail.com">divyamohan1993@gmail.com</a> | <a href="https://dmj.one" target="_blank">dmj.one</a></p>
+            <p class="recaptcha-branding">
+                Protected by reCAPTCHA Enterprise -
+                <a href="https://policies.google.com/privacy" target="_blank">Privacy</a> ·
+                <a href="https://policies.google.com/terms" target="_blank">Terms</a>
+            </p>
         </footer>
     </div>
 
-    <!-- Deploy Modal (Recruiter Info + CAPTCHA) -->
+    <!-- Deploy Modal (Recruiter Info) -->
     <div class="modal-overlay" id="deployModal">
         <div class="modal">
             <div class="modal-header">
@@ -112,25 +118,27 @@
                     <!-- Name -->
                     <div class="form-group">
                         <label for="recruiterName">Your Name <span class="required">*</span></label>
-                        <input type="text" id="recruiterName" name="name" placeholder="John Doe" required minlength="2" maxlength="100">
+                        <input type="text" id="recruiterName" name="name" placeholder="John Doe" required minlength="2" maxlength="100" autocomplete="name">
                     </div>
 
                     <!-- Email -->
                     <div class="form-group">
                         <label for="recruiterEmail">Email Address <span class="required">*</span></label>
-                        <input type="email" id="recruiterEmail" name="email" placeholder="john@company.com" required>
+                        <input type="email" id="recruiterEmail" name="email" placeholder="john@company.com" required autocomplete="email">
                     </div>
 
                     <!-- Company (Optional) -->
                     <div class="form-group">
                         <label for="recruiterCompany">Company <span class="optional">(optional)</span></label>
-                        <input type="text" id="recruiterCompany" name="company" placeholder="Acme Corp">
+                        <input type="text" id="recruiterCompany" name="company" placeholder="Acme Corp" autocomplete="organization">
                     </div>
 
-                    <!-- reCAPTCHA -->
-                    <div class="form-group captcha-group">
-                        <label>Security Verification <span class="required">*</span></label>
-                        <div class="g-recaptcha" data-sitekey="{{ recaptcha_site_key }}" data-theme="dark"></div>
+                    <!-- Security Notice (reCAPTCHA Enterprise is invisible) -->
+                    <div class="security-notice">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                        </svg>
+                        <span>Protected by Google reCAPTCHA Enterprise</span>
                     </div>
 
                     <!-- Error Message -->
@@ -146,7 +154,7 @@
                 </form>
 
                 <div class="modal-footer-note">
-                    <p>⏱️ Demo will run for 2 hours • 💰 No cost to you • 🔒 Your info helps prevent abuse</p>
+                    <p>⏱️ Demo runs for 2 hours • 💰 No cost to you • 🔒 Your info helps prevent abuse</p>
                 </div>
             </div>
         </div>

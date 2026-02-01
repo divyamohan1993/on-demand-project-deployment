@@ -5,7 +5,7 @@ On-Demand Project Deployment Orchestrator
 A secure web application to manage on-demand GCP spot instances for project demos.
 
 Security Features:
-- reCAPTCHA verification (Google reCAPTCHA v2)
+- reCAPTCHA Enterprise verification (Google Cloud)
 - Recruiter details collection (audit trail)
 - GLOBAL rate limiting (max 3 VMs per hour, regardless of IP)
 - Single VM at a time (auto-terminate previous)
@@ -17,7 +17,6 @@ Security Features:
 import os
 import json
 import time
-import hashlib
 import secrets
 import subprocess
 import threading
@@ -38,12 +37,12 @@ load_dotenv()
 # CONFIGURATION - LOADED FROM ENVIRONMENT
 # ============================================
 
-# Google reCAPTCHA Configuration
+# Google reCAPTCHA Enterprise Configuration
 RECAPTCHA_SITE_KEY = os.environ.get("RECAPTCHA_SITE_KEY", "6LegWV0sAAAAAFzlySHz_4EZQXjsRCq4D1F8Un6h")
-RECAPTCHA_SECRET_KEY = os.environ.get("RECAPTCHA_SECRET_KEY", "")
+GCP_PROJECT_ID = os.environ.get("GCP_PROJECT_ID", "dmjone")
+RECAPTCHA_API_KEY = os.environ.get("RECAPTCHA_API_KEY", "")  # Google Cloud API Key
 
 # GCP Configuration
-GCP_PROJECT_ID = os.environ.get("GCP_PROJECT_ID", "")
 GCP_ZONE = os.environ.get("GCP_ZONE", "us-east1-c")
 GCP_MACHINE_TYPE = os.environ.get("GCP_MACHINE_TYPE", "e2-micro")
 SPOT_INSTANCE_LIFETIME_HOURS = int(os.environ.get("SPOT_INSTANCE_LIFETIME_HOURS", "2"))
@@ -51,12 +50,14 @@ SPOT_INSTANCE_LIFETIME_HOURS = int(os.environ.get("SPOT_INSTANCE_LIFETIME_HOURS"
 # Secret key for Flask sessions
 SECRET_KEY = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 
+# Minimum reCAPTCHA score (0.0 to 1.0) - 0.5 is recommended
+RECAPTCHA_MIN_SCORE = float(os.environ.get("RECAPTCHA_MIN_SCORE", "0.5"))
+
 # ============================================
 # GLOBAL RATE LIMITING - HARD LIMITS
 # ============================================
-# These limits apply GLOBALLY, not per-IP, to prevent wallet drainage
 
-MAX_DEPLOYMENTS_PER_HOUR = 3  # Maximum 3 VMs can be started per hour globally
+MAX_DEPLOYMENTS_PER_HOUR = 3
 DEPLOYMENT_LOG_FILE = "/opt/project-orchestrator/deployment_log.json"
 
 def load_deployment_log():
@@ -79,25 +80,19 @@ def save_deployment_log(log_data):
         print(f"Error saving deployment log: {e}")
 
 def check_global_rate_limit():
-    """
-    Check if we've exceeded the global rate limit.
-    Returns (allowed: bool, remaining: int, reset_time: str)
-    """
+    """Check if we've exceeded the global rate limit."""
     log_data = load_deployment_log()
     deployments = log_data.get("deployments", [])
     
-    # Filter deployments from the last hour
     one_hour_ago = (datetime.now() - timedelta(hours=1)).isoformat()
     recent_deployments = [d for d in deployments if d > one_hour_ago]
     
-    # Update the log with only recent deployments
     log_data["deployments"] = recent_deployments
     save_deployment_log(log_data)
     
     remaining = MAX_DEPLOYMENTS_PER_HOUR - len(recent_deployments)
     
     if len(recent_deployments) >= MAX_DEPLOYMENTS_PER_HOUR:
-        # Calculate when the oldest deployment will expire
         oldest = min(recent_deployments)
         reset_time = (datetime.fromisoformat(oldest) + timedelta(hours=1)).isoformat()
         return False, 0, reset_time
@@ -107,19 +102,85 @@ def check_global_rate_limit():
 def record_deployment(recruiter_info):
     """Record a deployment for rate limiting and audit"""
     log_data = load_deployment_log()
-    
-    # Add deployment timestamp
     log_data.setdefault("deployments", []).append(datetime.now().isoformat())
     
-    # Add recruiter info for audit trail
     recruiter_entry = {
         **recruiter_info,
         "timestamp": datetime.now().isoformat(),
         "ip": request.remote_addr
     }
     log_data.setdefault("recruiters", []).append(recruiter_entry)
-    
     save_deployment_log(log_data)
+
+# ============================================
+# RECAPTCHA ENTERPRISE VERIFICATION
+# ============================================
+
+def verify_recaptcha_enterprise(token: str, expected_action: str = "DEPLOY") -> tuple[bool, float, str]:
+    """
+    Verify reCAPTCHA Enterprise token using Google Cloud API.
+    
+    Returns: (success: bool, score: float, error_message: str)
+    """
+    if not RECAPTCHA_API_KEY:
+        print("Warning: RECAPTCHA_API_KEY not configured")
+        return False, 0.0, "reCAPTCHA API key not configured"
+    
+    try:
+        # reCAPTCHA Enterprise API endpoint
+        url = f"https://recaptchaenterprise.googleapis.com/v1/projects/{GCP_PROJECT_ID}/assessments?key={RECAPTCHA_API_KEY}"
+        
+        payload = {
+            "event": {
+                "token": token,
+                "expectedAction": expected_action,
+                "siteKey": RECAPTCHA_SITE_KEY
+            }
+        }
+        
+        response = requests.post(url, json=payload, timeout=10)
+        result = response.json()
+        
+        # Check for API errors
+        if "error" in result:
+            error_msg = result.get("error", {}).get("message", "Unknown error")
+            print(f"reCAPTCHA Enterprise API error: {error_msg}")
+            return False, 0.0, f"API error: {error_msg}"
+        
+        # Check token validity
+        token_properties = result.get("tokenProperties", {})
+        if not token_properties.get("valid", False):
+            invalid_reason = token_properties.get("invalidReason", "UNKNOWN")
+            print(f"Invalid reCAPTCHA token: {invalid_reason}")
+            return False, 0.0, f"Invalid token: {invalid_reason}"
+        
+        # Get risk score (0.0 = likely bot, 1.0 = likely human)
+        risk_analysis = result.get("riskAnalysis", {})
+        score = risk_analysis.get("score", 0.0)
+        reasons = risk_analysis.get("reasons", [])
+        
+        if reasons:
+            print(f"reCAPTCHA risk reasons: {reasons}")
+        
+        # Check if action matches
+        actual_action = token_properties.get("action", "")
+        if actual_action != expected_action:
+            print(f"reCAPTCHA action mismatch: expected {expected_action}, got {actual_action}")
+            return False, score, "Action mismatch"
+        
+        # Check score threshold
+        if score < RECAPTCHA_MIN_SCORE:
+            print(f"reCAPTCHA score too low: {score} < {RECAPTCHA_MIN_SCORE}")
+            return False, score, f"Score too low ({score:.2f})"
+        
+        print(f"reCAPTCHA verification passed. Score: {score}")
+        return True, score, ""
+        
+    except requests.exceptions.Timeout:
+        return False, 0.0, "Verification timeout"
+    except Exception as e:
+        print(f"reCAPTCHA Enterprise verification error: {e}")
+        return False, 0.0, str(e)
 
 # ============================================
 # HARDCODED PROJECTS - NO USER INPUT ALLOWED
@@ -183,7 +244,7 @@ def get_project_env_vars(project_id):
     return env_vars
 
 # Instance tracking - only ONE can be active at a time
-ACTIVE_INSTANCE = None  # Global single instance tracker
+ACTIVE_INSTANCE = None
 
 # ============================================
 # FLASK APP INITIALIZATION
@@ -193,9 +254,8 @@ app = Flask(__name__, template_folder='../templates', static_folder='../static')
 app.secret_key = SECRET_KEY
 csrf = CSRFProtect(app)
 
-# Per-IP rate limiting (additional layer)
 limiter = Limiter(
-    key_func=get_remote_addr,
+    key_func=get_remote_address,
     app=app,
     default_limits=["100 per hour", "20 per minute"],
     storage_uri="memory://"
@@ -206,37 +266,14 @@ limiter = Limiter(
 # ============================================
 
 def validate_email(email):
-    """Basic email validation"""
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return bool(re.match(pattern, email))
 
 def validate_name(name):
-    """Basic name validation - letters, spaces, hyphens only"""
     if not name or len(name) < 2 or len(name) > 100:
         return False
     pattern = r'^[a-zA-Z\s\-\.]+$'
     return bool(re.match(pattern, name))
-
-def verify_captcha(captcha_response):
-    """Verify Google reCAPTCHA response"""
-    if not RECAPTCHA_SECRET_KEY:
-        print("Warning: reCAPTCHA secret key not configured")
-        return False
-    
-    try:
-        response = requests.post(
-            "https://www.google.com/recaptcha/api/siteverify",
-            data={
-                "secret": RECAPTCHA_SECRET_KEY,
-                "response": captcha_response
-            },
-            timeout=10
-        )
-        result = response.json()
-        return result.get("success", False)
-    except Exception as e:
-        print(f"reCAPTCHA verification error: {e}")
-        return False
 
 # ============================================
 # GCP INSTANCE MANAGEMENT
@@ -260,14 +297,11 @@ set -e
 # Generated: {datetime.now().isoformat()}
 # ==========================================
 
-# System preparation
 apt-get update
 apt-get install -y git nano vim curl
 
-# Define user
 USERNAME="deployer"
 
-# Create user if missing
 if ! id "$USERNAME" &>/dev/null; then
     useradd -m -s /bin/bash "$USERNAME"
     echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/deployer-init
@@ -275,7 +309,6 @@ if ! id "$USERNAME" &>/dev/null; then
     usermod -aG systemd-journal "$USERNAME"
 fi
 
-# Clone and configure as user
 sudo -u "$USERNAME" bash <<'EOF'
     set -e
     
@@ -283,22 +316,17 @@ sudo -u "$USERNAME" bash <<'EOF'
     USER_HOME="/home/$USERNAME"
     APP_DIR="$USER_HOME/app"
     
-    # Clean start
     if [ -d "$APP_DIR" ]; then
         rm -rf "$APP_DIR"
     fi
 
-    # Clone the repo
     git clone {project["github_url"]} "$APP_DIR"
     cd "$APP_DIR"
 
-    # Write environment file
     cat > .env <<EOT
 {env_vars_str}
 EOT
 
-    # Run deployment
-    echo "Starting deployment..."
     chmod +x {project["autoconfig_script"]}
     ./{project["autoconfig_script"]}
 EOF
@@ -308,12 +336,11 @@ echo "Startup script completed for {project["name"]}"
     return startup_script
 
 def terminate_all_instances():
-    """Terminate ALL active demo instances - ensures only 1 VM at a time"""
+    """Terminate ALL active demo instances"""
     global ACTIVE_INSTANCE
     
     terminated = []
     
-    # First, terminate tracked instance
     if ACTIVE_INSTANCE:
         try:
             instance_name = ACTIVE_INSTANCE.get("instance_name")
@@ -330,7 +357,7 @@ def terminate_all_instances():
             print(f"Error terminating tracked instance: {e}")
         ACTIVE_INSTANCE = None
     
-    # Also scan for any demo instances that might exist
+    # Also cleanup any orphaned demo instances
     try:
         list_cmd = [
             "gcloud", "compute", "instances", "list",
@@ -369,16 +396,14 @@ def create_spot_instance(project_id, recruiter_info):
     if not project:
         return {"error": "Invalid project"}
     
-    # FIRST: Terminate any existing instances
+    # Terminate any existing instances first
     terminated = terminate_all_instances()
     if terminated:
         print(f"Terminated previous instances: {terminated}")
     
-    # Generate unique instance name
     timestamp = int(time.time())
     instance_name = f"demo-{project_id}-{timestamp}"
     
-    # Generate startup script
     startup_script = generate_startup_script(project_id)
     if not startup_script:
         return {"error": "Failed to generate startup script"}
@@ -406,12 +431,10 @@ def create_spot_instance(project_id, recruiter_info):
         if result.returncode != 0:
             return {"error": f"Failed to create instance: {result.stderr}"}
         
-        # Parse the result
         instance_info = json.loads(result.stdout)
         if isinstance(instance_info, list):
             instance_info = instance_info[0]
         
-        # Get external IP
         network_interfaces = instance_info.get("networkInterfaces", [])
         external_ip = None
         if network_interfaces:
@@ -421,7 +444,6 @@ def create_spot_instance(project_id, recruiter_info):
         
         expires_at = (datetime.now() + timedelta(hours=SPOT_INSTANCE_LIFETIME_HOURS)).isoformat()
         
-        # Track this instance as THE active instance
         ACTIVE_INSTANCE = {
             "project_id": project_id,
             "instance_name": instance_name,
@@ -432,10 +454,8 @@ def create_spot_instance(project_id, recruiter_info):
             "recruiter": recruiter_info
         }
         
-        # Record for rate limiting
         record_deployment(recruiter_info)
         
-        # Schedule auto-termination
         def auto_terminate():
             time.sleep(SPOT_INSTANCE_LIFETIME_HOURS * 3600)
             terminate_all_instances()
@@ -448,7 +468,7 @@ def create_spot_instance(project_id, recruiter_info):
             "external_ip": external_ip,
             "port": project["port"],
             "expires_at": expires_at,
-            "message": f"Instance created. It will be ready in 2-3 minutes."
+            "message": "Instance created. It will be ready in 2-3 minutes."
         }
         
     except subprocess.TimeoutExpired:
@@ -481,7 +501,6 @@ def get_active_instance_status():
         instance_data = json.loads(result.stdout)
         gcp_status = instance_data.get("status", "UNKNOWN")
         
-        # Get current external IP
         network_interfaces = instance_data.get("networkInterfaces", [])
         external_ip = None
         if network_interfaces:
@@ -540,7 +559,6 @@ def get_projects():
         external_ip = None
         expires_at = None
         
-        # Check if this is the active project
         if active_status.get("active_instance"):
             active = active_status["active_instance"]
             if active["project_id"] == project_id:
@@ -574,11 +592,10 @@ def get_active():
     return jsonify(get_active_instance_status())
 
 @app.route('/api/deploy/<project_id>', methods=['POST'])
-@limiter.limit("5 per minute")  # Per-IP limit on top of global limit
+@limiter.limit("5 per minute")
 def deploy_project(project_id):
-    """Deploy a project - requires CAPTCHA and recruiter info"""
+    """Deploy a project - requires reCAPTCHA Enterprise verification"""
     
-    # Validate project_id
     if project_id not in PROJECTS:
         return jsonify({"error": "Invalid project"}), 400
     
@@ -586,13 +603,14 @@ def deploy_project(project_id):
     if not data:
         return jsonify({"error": "Invalid request"}), 400
     
-    # Validate CAPTCHA
-    captcha_response = data.get('captcha_response')
-    if not captcha_response:
-        return jsonify({"error": "Please complete the CAPTCHA"}), 400
+    # Validate reCAPTCHA Enterprise token
+    captcha_token = data.get('captcha_token')
+    if not captcha_token:
+        return jsonify({"error": "Please complete the security verification"}), 400
     
-    if not verify_captcha(captcha_response):
-        return jsonify({"error": "CAPTCHA verification failed. Please try again."}), 400
+    success, score, error = verify_recaptcha_enterprise(captcha_token, "DEPLOY")
+    if not success:
+        return jsonify({"error": f"Security verification failed: {error}"}), 400
     
     # Validate recruiter info
     name = data.get('name', '').strip()
@@ -609,15 +627,16 @@ def deploy_project(project_id):
     allowed, remaining, reset_time = check_global_rate_limit()
     if not allowed:
         return jsonify({
-            "error": f"Demo limit reached. Only {MAX_DEPLOYMENTS_PER_HOUR} demos can be started per hour. Please try again later.",
+            "error": f"Demo limit reached. Only {MAX_DEPLOYMENTS_PER_HOUR} demos can be started per hour.",
             "reset_time": reset_time
         }), 429
     
-    # All checks passed - deploy!
+    # Deploy!
     recruiter_info = {
         "name": name,
         "email": email,
-        "company": company
+        "company": company,
+        "recaptcha_score": score
     }
     
     result = create_spot_instance(project_id, recruiter_info)
@@ -631,13 +650,6 @@ def deploy_project(project_id):
 @limiter.limit("10 per minute")
 def terminate_current():
     """Terminate the currently active instance"""
-    data = request.get_json()
-    
-    # Still require CAPTCHA to prevent bot abuse
-    captcha_response = data.get('captcha_response') if data else None
-    if captcha_response and not verify_captcha(captcha_response):
-        return jsonify({"error": "CAPTCHA verification failed"}), 400
-    
     terminated = terminate_all_instances()
     
     if terminated:

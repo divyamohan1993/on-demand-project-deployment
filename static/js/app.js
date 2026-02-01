@@ -1,6 +1,6 @@
 /**
  * On-Demand Project Deployment Orchestrator
- * Frontend JavaScript - Recruiter-friendly interface
+ * Frontend JavaScript - reCAPTCHA Enterprise Integration
  */
 
 // Global state
@@ -9,8 +9,12 @@ const state = {
     selectedProject: null,
     activeInstance: null,
     statusPollingInterval: null,
-    deploymentsRemaining: 3
+    deploymentsRemaining: 3,
+    recaptchaReady: false
 };
+
+// reCAPTCHA Enterprise site key (from GCP console)
+const RECAPTCHA_SITE_KEY = document.querySelector('meta[name="recaptcha-site-key"]')?.content || '';
 
 // DOM Elements
 const elements = {
@@ -39,6 +43,38 @@ async function initializeApp() {
     await checkActiveInstance();
     await updateRateLimitDisplay();
     startStatusPolling();
+    initRecaptcha();
+}
+
+function initRecaptcha() {
+    // reCAPTCHA Enterprise is loaded automatically
+    if (typeof grecaptcha !== 'undefined' && grecaptcha.enterprise) {
+        grecaptcha.enterprise.ready(() => {
+            state.recaptchaReady = true;
+            console.log('reCAPTCHA Enterprise ready');
+        });
+    } else {
+        // Wait for script to load
+        setTimeout(initRecaptcha, 100);
+    }
+}
+
+// ============================================
+// reCAPTCHA ENTERPRISE
+// ============================================
+
+async function executeRecaptcha(action) {
+    if (!state.recaptchaReady) {
+        throw new Error('Security verification not ready. Please wait and try again.');
+    }
+
+    try {
+        const token = await grecaptcha.enterprise.execute(RECAPTCHA_SITE_KEY, { action });
+        return token;
+    } catch (error) {
+        console.error('reCAPTCHA execution error:', error);
+        throw new Error('Security verification failed. Please refresh and try again.');
+    }
 }
 
 // ============================================
@@ -95,13 +131,19 @@ async function updateRateLimitDisplay() {
 
 async function deployProject(projectId, formData) {
     try {
+        // Get reCAPTCHA token
+        const captchaToken = await executeRecaptcha('DEPLOY');
+
         const response = await fetch(`/api/deploy/${projectId}`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'X-CSRFToken': getCSRFToken()
             },
-            body: JSON.stringify(formData)
+            body: JSON.stringify({
+                ...formData,
+                captcha_token: captchaToken
+            })
         });
 
         const data = await response.json();
@@ -118,17 +160,13 @@ async function deployProject(projectId, formData) {
 
 async function terminateInstance() {
     try {
-        const captchaResponse = typeof grecaptcha !== 'undefined'
-            ? grecaptcha.getResponse()
-            : null;
-
         const response = await fetch('/api/terminate', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'X-CSRFToken': getCSRFToken()
             },
-            body: JSON.stringify({ captcha_response: captchaResponse })
+            body: JSON.stringify({})
         });
 
         const data = await response.json();
@@ -251,11 +289,6 @@ function showDeployModal(projectId, project) {
     // Reset form
     elements.deployForm.reset();
     elements.deployError.classList.remove('show');
-
-    // Reset reCAPTCHA
-    if (typeof grecaptcha !== 'undefined') {
-        grecaptcha.reset();
-    }
 
     // Show warning if replacing active instance
     const warningEl = document.getElementById('replaceWarning');
@@ -394,39 +427,27 @@ async function handleDeploySubmit(e) {
     const email = document.getElementById('recruiterEmail').value.trim();
     const company = document.getElementById('recruiterCompany').value.trim();
 
-    const captchaResponse = typeof grecaptcha !== 'undefined'
-        ? grecaptcha.getResponse()
-        : 'dev-mode';
-
-    if (!captchaResponse) {
-        elements.deployError.textContent = 'Please complete the CAPTCHA';
-        elements.deployError.classList.add('show');
-        return;
-    }
-
     const submitBtn = document.getElementById('deploySubmit');
     submitBtn.disabled = true;
     submitBtn.querySelector('.btn-text').style.display = 'none';
     submitBtn.querySelector('.btn-loader').style.display = 'flex';
+    elements.deployError.classList.remove('show');
 
     try {
         const result = await deployProject(state.selectedProject, {
             name,
             email,
-            company,
-            captcha_response: captchaResponse
+            company
         });
 
         hideDeployModal();
         showToast(`🚀 Starting ${state.projects[state.selectedProject].name}...`, 'success');
 
-        // Update UI
         updateProjectCard(state.selectedProject, {
             status: 'starting',
             external_ip: result.external_ip
         });
 
-        // Refresh data
         await loadProjects();
         await checkActiveInstance();
         await updateRateLimitDisplay();
@@ -434,10 +455,6 @@ async function handleDeploySubmit(e) {
     } catch (error) {
         elements.deployError.textContent = error.message;
         elements.deployError.classList.add('show');
-
-        if (typeof grecaptcha !== 'undefined') {
-            grecaptcha.reset();
-        }
     } finally {
         submitBtn.disabled = false;
         submitBtn.querySelector('.btn-text').style.display = 'inline';

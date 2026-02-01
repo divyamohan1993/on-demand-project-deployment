@@ -304,7 +304,7 @@ generate_all_keys() {
     local flask_secret=$(generate_secure_key)
     
     # Get GCP project ID
-    local gcp_project_id=""
+    local gcp_project_id="dmjone"
     if [ -f "$APP_DIR/.gcp_project_id" ]; then
         gcp_project_id=$(cat "$APP_DIR/.gcp_project_id")
     fi
@@ -321,10 +321,17 @@ generate_all_keys() {
 # NEVER commit this file to version control
 # ============================================
 
-# Google reCAPTCHA (REQUIRED)
+# Google reCAPTCHA Enterprise Configuration
+# Site Key (from GCP Console -> reCAPTCHA Enterprise)
 RECAPTCHA_SITE_KEY=$RECAPTCHA_SITE_KEY
-# ADD YOUR SECRET KEY BELOW:
-RECAPTCHA_SECRET_KEY=
+
+# API Key for reCAPTCHA Enterprise (from GCP Console -> APIs & Services -> Credentials)
+# Create an API key and restrict it to "reCAPTCHA Enterprise API"
+# REQUIRED - Add your API key below:
+RECAPTCHA_API_KEY=
+
+# Minimum score threshold (0.0 = bot, 1.0 = human). Default 0.5 recommended.
+RECAPTCHA_MIN_SCORE=0.5
 
 # GCP Configuration
 GCP_PROJECT_ID=$gcp_project_id
@@ -360,7 +367,7 @@ EOF
     fi
     
     log_success "All keys generated securely"
-    log_warning "IMPORTANT: Add your reCAPTCHA SECRET key to $secrets_file"
+    log_warning "IMPORTANT: Add your RECAPTCHA_API_KEY to $secrets_file"
 }
 
 # ============================================
@@ -680,25 +687,30 @@ print_summary() {
     echo "  • Nginx: $(systemctl is-active nginx)"
     echo ""
     echo "========================================"
-    echo " REQUIRED: ADD RECAPTCHA SECRET KEY"
+    echo " REQUIRED: ADD RECAPTCHA ENTERPRISE API KEY"
     echo "========================================"
     echo ""
-    echo "1. Edit the configuration file:"
+    echo "1. Go to GCP Console -> APIs & Services -> Credentials"
+    echo "   https://console.cloud.google.com/apis/credentials"
+    echo ""
+    echo "2. Create an API key and restrict it to:"
+    echo "   - 'reCAPTCHA Enterprise API'"
+    echo ""
+    echo "3. Edit the configuration file:"
     echo "   sudo nano $APP_DIR/.env"
     echo ""
-    echo "2. Find RECAPTCHA_SECRET_KEY= and add your key"
-    echo "   (Get it from: https://www.google.com/recaptcha/admin)"
+    echo "4. Add your API key to RECAPTCHA_API_KEY="
     echo ""
-    echo "3. Restart the service:"
+    echo "5. Restart the service:"
     echo "   sudo systemctl restart project-orchestrator"
     echo ""
-    echo "4. Access your application:"
+    echo "6. Access your application:"
     echo "   http://$DOMAIN (or https:// after SSL)"
     echo ""
     echo "========================================"
     echo ""
     echo "Security Features:"
-    echo "  ✓ CAPTCHA verification (no password needed)"
+    echo "  ✓ reCAPTCHA Enterprise (score-based, invisible)"
     echo "  ✓ Recruiter info collection (audit trail)"
     echo "  ✓ Global rate limit: 3 VMs per hour"
     echo "  ✓ Single VM at a time (auto-terminate)"
