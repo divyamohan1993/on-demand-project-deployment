@@ -1,0 +1,49 @@
+# ============================================
+# On-Demand Project Deployment Orchestrator
+# Git Ignore File
+# ============================================
+
+# Environment & Secrets (NEVER COMMIT)
+.env
+.env.local
+.env.production
+*.env
+secrets/
+!secrets/.gitkeep
+
+# Python
+*.pyc
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-*
+
+# OS
+.DS_Store
+Thumbs.db
+*.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+
+# GCP
+.gcp_project_id
+
+# Generated at runtime
+/swapfile
+*.pid
