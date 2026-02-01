@@ -360,12 +360,16 @@ EOF
     chown root:root "$secrets_file"
     
     # Store vault key
-    echo "$vault_key" > "$vault_key_file"
-    chmod 400 "$vault_key_file"
-    chown root:root "$vault_key_file"
-    
-    # Make vault key immutable
-    chattr +i "$vault_key_file" 2>/dev/null || true
+    if [ -f "$vault_key_file" ]; then
+        log "Vault encryption key already exists, preserving..."
+    else
+        log "Generating vault encryption key..."
+        echo "$vault_key" > "$vault_key_file"
+        chmod 400 "$vault_key_file"
+        chown root:root "$vault_key_file"
+        # Make vault key immutable
+        chattr +i "$vault_key_file" 2>/dev/null || true
+    fi
     
     # Store master password securely (for initial access only)
     local password_file="$VAULT_DIR/keys/.master_password_INITIAL_DELETE_AFTER_READING"
@@ -393,7 +397,14 @@ setup_vault() {
     log_section "STEP 6: Setting Up Secure Vault"
     
     # Set extreme permissions on vault
+    
+    # Temporarily remove immutable flag from key if it exists
+    chattr -i "$VAULT_DIR/keys/vault.key" 2>/dev/null || true
+    
     chown -R root:root "$VAULT_DIR"
+    
+    # Restore immutable flag
+    chattr +i "$VAULT_DIR/keys/vault.key" 2>/dev/null || true
     chmod 700 "$VAULT_DIR"
     chmod 700 "$VAULT_DIR/keys"
     chmod 700 "$VAULT_DIR/projects"
