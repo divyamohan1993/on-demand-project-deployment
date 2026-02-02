@@ -431,6 +431,13 @@ APPARMOR
 setup_service() {
     log_section "STEP 7: Configuring Systemd Service"
     
+    # Find gcloud path
+    local gcloud_path=$(which gcloud 2>/dev/null || echo "/usr/bin/gcloud")
+    local gcloud_dir=$(dirname "$gcloud_path")
+    
+    # Google Cloud SDK is typically in /usr/lib/google-cloud-sdk/bin or /snap/bin
+    local sdk_paths="/usr/lib/google-cloud-sdk/bin:/snap/bin:/usr/local/google-cloud-sdk/bin"
+    
     cat > /etc/systemd/system/project-orchestrator.service << EOF
 [Unit]
 Description=On-Demand Project Deployment Orchestrator
@@ -442,7 +449,8 @@ Type=simple
 User=root
 Group=root
 WorkingDirectory=$APP_DIR
-Environment="PATH=$APP_DIR/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PATH=$APP_DIR/venv/bin:$gcloud_dir:$sdk_paths:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"
+Environment="GOOGLE_CLOUD_PROJECT=$GCP_PROJECT_ID"
 EnvironmentFile=$APP_DIR/.env
 ExecStart=$APP_DIR/venv/bin/gunicorn --workers 2 --bind 127.0.0.1:5000 --timeout 120 server.app:app
 Restart=always
@@ -450,12 +458,11 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
-# Security hardening
+# Security settings - relaxed to allow gcloud operations
 NoNewPrivileges=false
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=$APP_DIR /dev/shm
-PrivateTmp=true
+ProtectSystem=false
+ProtectHome=false
+PrivateTmp=false
 
 [Install]
 WantedBy=multi-user.target
