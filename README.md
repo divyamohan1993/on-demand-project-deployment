@@ -1,6 +1,6 @@
 # 🚀 On-Demand Project Deployment Orchestrator
 
-A **secure, fully automated** system for deploying project demos on Google Cloud Platform. Deploy temporary spot instances with a single click, protected by reCAPTCHA and password authentication.
+A **secure, fully automated** system for deploying project demos on Google Cloud Platform. Deploy temporary spot instances with a single click, protected by reCAPTCHA Enterprise and strict rate limiting.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.8+-green.svg)
@@ -9,121 +9,132 @@ A **secure, fully automated** system for deploying project demos on Google Cloud
 ## ✨ Features
 
 - **One-Click Deployment** - Deploy any project with a single click
+- **Recruiter Friendly** - No passwords required! Just Name & Email (audit trail)
+- **Advanced Bot Protection** - Google reCAPTCHA Enterprise (score-based, invisible)
+- **Waitlist Management** - Global limit of **3 VMs per hour** to prevent abuse
+- **Cost Control** - Strict "One VM at a time" policy (existing VM is auto-killed)
 - **Zero Configuration** - `autoconfig.sh` handles everything automatically
-- **Maximum Security** - reCAPTCHA, password auth, encrypted secrets, SSH hardening
-- **Cost Effective** - Runs on GCP's always-free e2-micro VM
-- **2-Hour Auto-Termination** - Spot instances auto-delete, no runaway costs
-- **4GB Swap File** - Overcomes 1GB RAM limitation automatically
-- **Beautiful UI** - Modern glassmorphism design with dark theme
+- **Cloudflare Ready** - Supports Flexible SSL mode (Cloudflare handles HTTPS)
 
 ## 🏗️ Architecture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    projects.dmj.one                         │
-│                         (HTTPS)                             │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│              Always-Free GCP VM (e2-micro)                  │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐ │
-│  │   Nginx     │→ │   Flask     │→ │   GCloud CLI        │ │
-│  │   + SSL     │  │   + Auth    │  │   (Create/Delete)   │ │
-│  └─────────────┘  └─────────────┘  └─────────────────────┘ │
-└─────────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    Spot Instances                           │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐ │
-│  │  Project 1  │  │  Project 2  │  │  Project N          │ │
-│  │  (2 hours)  │  │  (2 hours)  │  │  (2 hours)          │ │
-│  └─────────────┘  └─────────────┘  └─────────────────────┘ │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    User[Recruiter] -->|HTTPS| CF[Cloudflare Proxy]
+    CF -->|HTTP + Headers| VM[Orchestrator VM]
+    VM -->|Validate| ReCAPTCHA[Google reCAPTCHA Enterprise]
+    VM -->|Launch| Spot[Spot Instance (2 Hours)]
+    
+    subgraph Security Layer
+    ReCAPTCHA
+    Audit[Audit Log]
+    Rate[Global Rate Limit]
+    end
 ```
 
-## 🔒 Security Features
+## 🔒 Security Model
 
 | Layer | Implementation |
 |-------|----------------|
-| **Authentication** | reCAPTCHA v2 + Password (SHA-256) |
-| **Session** | Flask sessions with 30-min expiry |
-| **Rate Limiting** | 100/hour, 20/minute per IP |
-| **CSRF Protection** | Flask-WTF tokens |
-| **Firewall** | UFW - SSH, HTTP, HTTPS only |
-| **Brute Force** | Fail2Ban auto-banning |
-| **SSH** | Key-only, no root, 3 max attempts |
-| **Encryption** | AES-256 for secrets |
-| **SSL/TLS** | Let's Encrypt auto-renewal |
+| **Validation** | reCAPTCHA Enterprise (Score 0.0 - 1.0) |
+| **Audit Trail** | Logs Recruiter Name, Email, IP, Company |
+| **Rate Limiting** | **3 VMs per hour (Global)** + 5/min per IP |
+| **Concurrency** | **Max 1 Active VM** (New kills Old) |
+| **Network** | Cloudflare Flexible SSL (Hides Server IP) |
+| **System** | UFW Firewall, Fail2Ban, Non-root execution |
 
-## 🚀 Quick Start
+## 🚀 Deployment Guide
 
 ### Prerequisites
 
-- GCP Account with always-free VM (e2-micro in us-east1, us-west1, or us-central1)
-- Domain pointing to your VM's IP
-- reCAPTCHA v2 keys from [Google reCAPTCHA](https://www.google.com/recaptcha/admin)
+1.  **GCP Account** with an always-free VM instance (`e2-micro`).
+2.  **Domain Name** managed by Cloudflare.
+3.  **Google Cloud Project** with "reCAPTCHA Enterprise API" enabled.
 
-### One-Command Deployment
+### Step 1: GCP VM Setup
+
+1.  Create an `e2-micro` instance in `us-east1`, `us-west1`, or `us-central1`.
+2.  OS: Ubuntu 22.04 LTS x86/64.
+3.  Allow HTTP/HTTPS traffic.
+
+### Step 2: One-Command Installation
+
+SSH into your VM and run:
 
 ```bash
-# SSH into your GCP VM
-gcloud compute ssh YOUR_VM_NAME --zone=YOUR_ZONE
-
-# Clone and run
+# Clone the repository
 git clone https://github.com/divyamohan1993/on-demand-project-deployment.git /opt/project-orchestrator
 cd /opt/project-orchestrator
+
+# Run the auto-configuration script
 sudo chmod +x autoconfig.sh
 sudo ./autoconfig.sh
 ```
 
-That's it! The script handles:
-- ✅ 4GB Swap file creation
-- ✅ All dependencies installation
-- ✅ Secure key generation
-- ✅ SSL certificate
-- ✅ Firewall & security hardening
-- ✅ Service auto-start
+The script will:
+- ✅ Create a 4GB Swap file (critical for `e2-micro`)
+- ✅ Install Python, Nginx, Gunicorn, and dependencies
+- ✅ Configure Nginx for Cloudflare Flexible SSL
+- ✅ Set up systemd services and security hardening
 
-### Post-Installation
+### Step 3: Configure reCAPTCHA Enterprise
 
-1. **Get your master password:**
-   ```bash
-   sudo cat /opt/project-orchestrator/secrets/keys/.master_password_INITIAL_DELETE_AFTER_READING
-   ```
+1.  Go to **[Google Cloud Console > Security > reCAPTCHA Enterprise](https://console.cloud.google.com/security/recaptcha)**.
+2.  Create a Key for your domain (e.g., `projects.dmj.one`).
+    -   **Integration type**: Scoring (no checkbox).
+    -   Copy the **Site Key**.
+3.  Go to **[APIs & Services > Credentials](https://console.cloud.google.com/apis/credentials)**.
+4.  Create an **API Key**.
+    -   Restrict key to "reCAPTCHA Enterprise API".
+    -   Copy the **API Key**.
+5.  Update your environment file:
 
-2. **Add your reCAPTCHA secret key:**
-   ```bash
-   sudo nano /opt/project-orchestrator/.env
-   # Add: RECAPTCHA_SECRET_KEY=your_secret_key
-   ```
-
-3. **Restart and access:**
-   ```bash
-   sudo systemctl restart project-orchestrator
-   # Visit: https://your-domain.com
-   ```
-
-## 📁 Project Structure
-
+```bash
+sudo nano /opt/project-orchestrator/.env
 ```
-on-demand-project-deployment/
-├── autoconfig.sh          # 🔧 One-script setup (run this!)
-├── requirements.txt       # Python dependencies
-├── README.md              # This file
-├── server/
-│   ├── __init__.py
-│   └── app.py             # Flask backend
-├── static/
-│   ├── css/
-│   │   ├── main.css       # Base styles
-│   │   └── components.css # UI components
-│   └── js/
-│       └── app.js         # Frontend logic
-└── templates/
-    └── index.html         # Main page
+
+Add your keys:
+```ini
+RECAPTCHA_SITE_KEY=your_site_key_here
+RECAPTCHA_API_KEY=your_api_key_here
 ```
+
+Restart the service:
+```bash
+sudo systemctl restart project-orchestrator
+```
+
+### Step 4: Cloudflare Setup (Important!)
+
+1.  Go to **Cloudflare Dashboard > SSL/TLS**.
+2.  Set SSL/TLS encryption mode to **Flexible** (or Full if you have a cert, but Flexible is easiest).
+3.  Go to **DNS** and ensure your domain is proxied (Orange Cloud).
+
+---
+
+## 🔧 Management
+
+### View Logs
+```bash
+# Application logs (deployments, errors)
+sudo journalctl -u project-orchestrator -f
+
+# Access logs (Nginx)
+sudo tail -f /var/log/nginx/access.log
+```
+
+### Restart Services
+```bash
+sudo systemctl restart project-orchestrator
+sudo systemctl reload nginx
+```
+
+### Check Rate Limits manually
+```bash
+cat /opt/project-orchestrator/deployment_log.json
+```
+
+---
 
 ## ➕ Adding Projects
 
@@ -131,89 +142,47 @@ Edit `server/app.py` and add to the `PROJECTS` dictionary:
 
 ```python
 PROJECTS = {
-    "my-new-project": {
-        "name": "My Project Name",
-        "description": "What this project does",
-        "github_url": "https://github.com/username/repo",
-        "autoconfig_script": "autoconfig.sh",  # Must exist in repo
+    "my-project": {
+        "name": "My Cool App",
+        "description": "Short description shown on card",
+        "github_url": "https://github.com/user/repo",
+        "autoconfig_script": "autoconfig.sh",  # Script in your repo root
         "port": 3000,
-        "env_vars": {
-            "PORT": "3000",
-            "NODE_ENV": "production",
-        },
+        "env_vars": { "NODE_ENV": "production" },
         "icon": "🚀",
-        "category": "Category"
-    },
+        "category": "Web App"
+    }
 }
 ```
 
-### Project Requirements
+**Project Requirements:**
+- The target repo must have an executable `autoconfig.sh` (or specified script).
+- The script must start the server on the specified port.
 
-Each deployable project must have an `autoconfig.sh` script that:
-1. Installs dependencies
-2. Builds the project (if needed)
-3. Starts the server
+---
 
 ## 💰 Cost Analysis
 
-| Component | Monthly Cost |
-|-----------|--------------|
-| Orchestrator VM (e2-micro) | **FREE** |
-| 30GB Standard Disk | **FREE** |
-| 1GB Egress/month | **FREE** |
-| Spot Instances | ~$0.002/hour |
-| **Typical Monthly Total** | **< $1** |
+| Component | Cost | Notes |
+|-----------|------|-------|
+| **Orchestrator VM** | FREE | Always-free tier `e2-micro` |
+| **Spot VM** | ~$0.007/hr | Only runs when requested |
+| **Bandwidth** | FREE | Within free tier limits |
+| **Total** | **<$1.00/mo** | Assuming ~5 demos/day |
 
-## 🔧 Management Commands
-
-```bash
-# View service status
-sudo systemctl status project-orchestrator
-
-# View logs
-sudo journalctl -u project-orchestrator -f
-
-# Restart service
-sudo systemctl restart project-orchestrator
-
-# Check swap status
-free -h
-swapon --show
-
-# View firewall status
-sudo ufw status
-
-# Renew SSL certificate
-sudo certbot renew
-```
+---
 
 ## 🐛 Troubleshooting
 
-### Service Won't Start
-```bash
-sudo journalctl -u project-orchestrator -n 50
-```
+**"Too many redirects" error:**
+- Ensure Cloudflare SSL is set to **Flexible**.
+- Ensure Nginx config has `proxy_set_header X-Forwarded-Proto https;`.
 
-### SSL Certificate Issues
-```bash
-sudo certbot --nginx -d your-domain.com --force-renewal
-```
+**"Verification failed":**
+- Check `RECAPTCHA_API_KEY` in `.env`.
+- Ensure the API Key has "reCAPTCHA Enterprise API" permission.
 
-### Memory Issues
-```bash
-# Check swap
-free -h
-
-# Enable swap manually if needed
-sudo fallocate -l 4G /swapfile
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile
-sudo swapon /swapfile
-```
-
-## 📄 License
-
-MIT License - feel free to use and modify.
+---
 
 ## 👤 Author
 
@@ -222,5 +191,4 @@ MIT License - feel free to use and modify.
 - Website: [dmj.one](https://dmj.one)
 
 ---
-
-Made with ❤️ for the developer community
+Made with ❤️ for the developer community.
