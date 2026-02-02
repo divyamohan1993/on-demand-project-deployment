@@ -1,6 +1,7 @@
 /**
  * On-Demand Project Deployment Orchestrator
  * Frontend JavaScript - reCAPTCHA Enterprise Integration
+ * Version: 2.0.0 - Idempotent & Error-Resilient
  */
 
 // Global state
@@ -13,45 +14,65 @@ const state = {
     recaptchaReady: false
 };
 
-// reCAPTCHA Enterprise site key (from GCP console)
+// reCAPTCHA Enterprise site key
 const RECAPTCHA_SITE_KEY = document.querySelector('meta[name="recaptcha-site-key"]')?.content || '';
 
-// DOM Elements
-const elements = {
-    projectsGrid: document.getElementById('projectsGrid'),
-    deployModal: document.getElementById('deployModal'),
-    instanceModal: document.getElementById('instanceModal'),
-    deployForm: document.getElementById('deployForm'),
-    deployError: document.getElementById('deployError'),
-    toastContainer: document.getElementById('toastContainer'),
-    deployProjectName: document.getElementById('deployProjectName'),
-    rateLimitInfo: document.getElementById('rateLimitInfo'),
-    activeInstanceBanner: document.getElementById('activeInstanceBanner')
-};
+// DOM Elements - with null safety
+const elements = {};
+
+function initializeElements() {
+    elements.projectsGrid = document.getElementById('projectsGrid');
+    elements.deployModal = document.getElementById('deployModal');
+    elements.instanceModal = document.getElementById('instanceModal');
+    elements.deployForm = document.getElementById('deployForm');
+    elements.deployError = document.getElementById('deployError');
+    elements.toastContainer = document.getElementById('toastContainer');
+    elements.deployProjectName = document.getElementById('deployProjectName');
+    elements.rateLimitInfo = document.getElementById('rateLimitInfo');
+    elements.activeInstanceBanner = document.getElementById('activeInstanceBanner');
+
+    // Log missing elements for debugging
+    const requiredElements = [
+        'projectsGrid', 'deployModal', 'instanceModal', 'deployForm',
+        'deployError', 'toastContainer', 'deployProjectName'
+    ];
+
+    requiredElements.forEach(id => {
+        if (!elements[id]) {
+            console.warn(`[App] Missing element: ${id}`);
+        }
+    });
+}
 
 // ============================================
 // INITIALIZATION
 // ============================================
 
 document.addEventListener('DOMContentLoaded', () => {
+    console.log('[App] Initializing...');
+    initializeElements();
     initializeApp();
     setupEventListeners();
 });
 
 async function initializeApp() {
-    await loadProjects();
-    await checkActiveInstance();
-    await updateRateLimitDisplay();
-    startStatusPolling();
-    initRecaptcha();
+    try {
+        await loadProjects();
+        await checkActiveInstance();
+        await updateRateLimitDisplay();
+        startStatusPolling();
+        initRecaptcha();
+        console.log('[App] Initialization complete');
+    } catch (error) {
+        console.error('[App] Initialization error:', error);
+    }
 }
 
 function initRecaptcha() {
-    // reCAPTCHA Enterprise is loaded automatically
     if (typeof grecaptcha !== 'undefined' && grecaptcha.enterprise) {
         grecaptcha.enterprise.ready(() => {
             state.recaptchaReady = true;
-            console.log('reCAPTCHA Enterprise ready');
+            console.log('[reCAPTCHA] Enterprise ready');
         });
     } else {
         // Wait for script to load
@@ -65,14 +86,21 @@ function initRecaptcha() {
 
 async function executeRecaptcha(action) {
     if (!state.recaptchaReady) {
-        throw new Error('Security verification not ready. Please wait and try again.');
+        console.warn('[reCAPTCHA] Not ready, waiting...');
+        // Wait a bit and retry
+        await new Promise(resolve => setTimeout(resolve, 500));
+        if (!state.recaptchaReady) {
+            throw new Error('Security verification not ready. Please wait and try again.');
+        }
     }
 
     try {
+        console.log(`[reCAPTCHA] Executing for action: ${action}`);
         const token = await grecaptcha.enterprise.execute(RECAPTCHA_SITE_KEY, { action });
+        console.log('[reCAPTCHA] Token obtained successfully');
         return token;
     } catch (error) {
-        console.error('reCAPTCHA execution error:', error);
+        console.error('[reCAPTCHA] Execution error:', error);
         throw new Error('Security verification failed. Please refresh and try again.');
     }
 }
@@ -83,13 +111,15 @@ async function executeRecaptcha(action) {
 
 async function loadProjects() {
     try {
+        console.log('[API] Loading projects...');
         const response = await fetch('/api/projects');
         if (!response.ok) throw new Error('Failed to load projects');
 
         state.projects = await response.json();
+        console.log(`[API] Loaded ${Object.keys(state.projects).length} projects`);
         renderProjects();
     } catch (error) {
-        console.error('Error loading projects:', error);
+        console.error('[API] Error loading projects:', error);
         showToast('Failed to load projects', 'error');
     }
 }
@@ -102,7 +132,7 @@ async function checkActiveInstance() {
         state.activeInstance = data.active_instance;
         updateActiveInstanceBanner();
     } catch (error) {
-        console.error('Error checking active instance:', error);
+        console.error('[API] Error checking active instance:', error);
     }
 }
 
@@ -125,12 +155,14 @@ async function updateRateLimitDisplay() {
             }
         }
     } catch (error) {
-        console.error('Error getting rate limit:', error);
+        console.error('[API] Error getting rate limit:', error);
     }
 }
 
 async function deployProject(projectId, formData) {
     try {
+        console.log(`[Deploy] Starting deployment for: ${projectId}`);
+
         // Get reCAPTCHA token
         const captchaToken = await executeRecaptcha('DEPLOY');
 
@@ -149,17 +181,21 @@ async function deployProject(projectId, formData) {
         const data = await response.json();
 
         if (!response.ok) {
+            console.error(`[Deploy] Failed: ${data.error}`);
             throw new Error(data.error || 'Deployment failed');
         }
 
+        console.log('[Deploy] Success:', data);
         return data;
     } catch (error) {
+        console.error('[Deploy] Error:', error);
         throw error;
     }
 }
 
 async function terminateInstance() {
     try {
+        console.log('[Terminate] Stopping instance...');
         const response = await fetch('/api/terminate', {
             method: 'POST',
             headers: {
@@ -175,8 +211,10 @@ async function terminateInstance() {
             throw new Error(data.error || 'Failed to terminate');
         }
 
+        console.log('[Terminate] Success');
         return data;
     } catch (error) {
+        console.error('[Terminate] Error:', error);
         throw error;
     }
 }
@@ -186,6 +224,11 @@ async function terminateInstance() {
 // ============================================
 
 function renderProjects() {
+    if (!elements.projectsGrid) {
+        console.error('[Render] projectsGrid element not found');
+        return;
+    }
+
     elements.projectsGrid.innerHTML = '';
 
     for (const [projectId, project] of Object.entries(state.projects)) {
@@ -282,13 +325,26 @@ function updateActiveInstanceBanner() {
 // ============================================
 
 function showDeployModal(projectId, project) {
+    if (!elements.deployModal) {
+        console.error('[Modal] deployModal not found');
+        return;
+    }
+
     state.selectedProject = projectId;
-    elements.deployProjectName.textContent = project.name;
+
+    if (elements.deployProjectName) {
+        elements.deployProjectName.textContent = project.name;
+    }
+
     elements.deployModal.classList.add('active');
 
     // Reset form
-    elements.deployForm.reset();
-    elements.deployError.classList.remove('show');
+    if (elements.deployForm) {
+        elements.deployForm.reset();
+    }
+    if (elements.deployError) {
+        elements.deployError.classList.remove('show');
+    }
 
     // Show warning if replacing active instance
     const warningEl = document.getElementById('replaceWarning');
@@ -303,43 +359,69 @@ function showDeployModal(projectId, project) {
 }
 
 function hideDeployModal() {
-    elements.deployModal.classList.remove('active');
+    if (elements.deployModal) {
+        elements.deployModal.classList.remove('active');
+    }
     state.selectedProject = null;
 }
 
 function showInstanceModal(projectId, project) {
+    if (!elements.instanceModal) {
+        console.error('[Modal] instanceModal not found');
+        return;
+    }
+
     state.selectedProject = projectId;
 
-    document.getElementById('instanceProject').textContent = project.name;
-    document.getElementById('instanceIP').textContent = project.external_ip || '-';
+    const instanceProject = document.getElementById('instanceProject');
+    const instanceIP = document.getElementById('instanceIP');
+    const instanceURL = document.getElementById('instanceURL');
+    const openInstance = document.getElementById('openInstance');
+    const instanceExpiry = document.getElementById('instanceExpiry');
+    const statusBadge = document.getElementById('instanceStatusBadge');
+
+    if (instanceProject) instanceProject.textContent = project.name;
+    if (instanceIP) instanceIP.textContent = project.external_ip || '-';
 
     const url = project.external_ip ? `http://${project.external_ip}:${project.port}` : '#';
-    document.getElementById('instanceURL').href = url;
-    document.getElementById('instanceURL').textContent = url !== '#' ? url : '-';
-    document.getElementById('openInstance').href = url;
+    if (instanceURL) {
+        instanceURL.href = url;
+        instanceURL.textContent = url !== '#' ? url : '-';
+    }
+    if (openInstance) openInstance.href = url;
 
-    document.getElementById('instanceExpiry').textContent = project.expires_at
-        ? new Date(project.expires_at).toLocaleString()
-        : '-';
+    if (instanceExpiry) {
+        instanceExpiry.textContent = project.expires_at
+            ? new Date(project.expires_at).toLocaleString()
+            : '-';
+    }
 
     updateCountdown(project.expires_at);
 
-    const statusBadge = document.getElementById('instanceStatusBadge');
-    statusBadge.className = `instance-status-badge ${project.status}`;
-    statusBadge.querySelector('.status-text').textContent =
-        project.status === 'running' ? 'Running' : 'Starting...';
+    if (statusBadge) {
+        statusBadge.className = `instance-status-badge ${project.status}`;
+        const statusText = statusBadge.querySelector('.status-text');
+        if (statusText) {
+            statusText.textContent = project.status === 'running' ? 'Running' : 'Starting...';
+        }
+    }
 
     elements.instanceModal.classList.add('active');
 }
 
 function hideInstanceModal() {
-    elements.instanceModal.classList.remove('active');
+    if (elements.instanceModal) {
+        elements.instanceModal.classList.remove('active');
+    }
     state.selectedProject = null;
 }
 
 function updateCountdown(expiresAt) {
+    const timeRemainingEl = document.getElementById('instanceTimeRemaining');
+    if (!timeRemainingEl) return;
+
     if (!expiresAt) {
-        document.getElementById('instanceTimeRemaining').textContent = '-';
+        timeRemainingEl.textContent = '-';
         return;
     }
 
@@ -349,7 +431,7 @@ function updateCountdown(expiresAt) {
         const diff = expiry - now;
 
         if (diff <= 0) {
-            document.getElementById('instanceTimeRemaining').textContent = 'Expired';
+            timeRemainingEl.textContent = 'Expired';
             return;
         }
 
@@ -357,7 +439,7 @@ function updateCountdown(expiresAt) {
         const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
         const seconds = Math.floor((diff % (1000 * 60)) / 1000);
 
-        document.getElementById('instanceTimeRemaining').textContent =
+        timeRemainingEl.textContent =
             `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
     };
 
@@ -370,32 +452,60 @@ function updateCountdown(expiresAt) {
 // ============================================
 
 function setupEventListeners() {
-    // Close modals
-    document.getElementById('closeDeployModal').addEventListener('click', hideDeployModal);
-    document.getElementById('closeInstanceModal').addEventListener('click', hideInstanceModal);
+    console.log('[Events] Setting up event listeners...');
+
+    // Close modals - with null checks
+    const closeDeployModal = document.getElementById('closeDeployModal');
+    const closeInstanceModal = document.getElementById('closeInstanceModal');
+
+    if (closeDeployModal) {
+        closeDeployModal.addEventListener('click', hideDeployModal);
+    } else {
+        console.warn('[Events] closeDeployModal not found');
+    }
+
+    if (closeInstanceModal) {
+        closeInstanceModal.addEventListener('click', hideInstanceModal);
+    } else {
+        console.warn('[Events] closeInstanceModal not found');
+    }
 
     // Click outside modal to close
-    elements.deployModal.addEventListener('click', (e) => {
-        if (e.target === elements.deployModal) hideDeployModal();
-    });
-    elements.instanceModal.addEventListener('click', (e) => {
-        if (e.target === elements.instanceModal) hideInstanceModal();
-    });
+    if (elements.deployModal) {
+        elements.deployModal.addEventListener('click', (e) => {
+            if (e.target === elements.deployModal) hideDeployModal();
+        });
+    }
+    if (elements.instanceModal) {
+        elements.instanceModal.addEventListener('click', (e) => {
+            if (e.target === elements.instanceModal) hideInstanceModal();
+        });
+    }
 
     // Deploy form submission
-    elements.deployForm.addEventListener('submit', handleDeploySubmit);
+    if (elements.deployForm) {
+        elements.deployForm.addEventListener('submit', handleDeploySubmit);
+    } else {
+        console.warn('[Events] deployForm not found');
+    }
 
     // Copy IP button
-    document.getElementById('copyIP').addEventListener('click', () => {
-        const ip = document.getElementById('instanceIP').textContent;
-        if (ip && ip !== '-') {
-            navigator.clipboard.writeText(ip);
-            showToast('IP copied to clipboard', 'success');
-        }
-    });
+    const copyIP = document.getElementById('copyIP');
+    if (copyIP) {
+        copyIP.addEventListener('click', () => {
+            const ip = document.getElementById('instanceIP')?.textContent;
+            if (ip && ip !== '-') {
+                navigator.clipboard.writeText(ip);
+                showToast('IP copied to clipboard', 'success');
+            }
+        });
+    }
 
     // Stop instance button
-    document.getElementById('stopInstance').addEventListener('click', handleStopFromModal);
+    const stopInstance = document.getElementById('stopInstance');
+    if (stopInstance) {
+        stopInstance.addEventListener('click', handleStopFromModal);
+    }
 
     // Keyboard shortcuts
     document.addEventListener('keydown', (e) => {
@@ -404,9 +514,13 @@ function setupEventListeners() {
             hideInstanceModal();
         }
     });
+
+    console.log('[Events] Event listeners ready');
 }
 
 function handleCardClick(projectId, project) {
+    console.log(`[Card] Clicked: ${projectId}, status: ${project.status}`);
+
     if (project.status === 'running') {
         showInstanceModal(projectId, project);
     } else if (project.status === 'starting') {
@@ -422,16 +536,29 @@ function handleCardClick(projectId, project) {
 
 async function handleDeploySubmit(e) {
     e.preventDefault();
+    console.log('[Deploy] Form submitted');
 
-    const name = document.getElementById('recruiterName').value.trim();
-    const email = document.getElementById('recruiterEmail').value.trim();
-    const company = document.getElementById('recruiterCompany').value.trim();
+    const nameInput = document.getElementById('recruiterName');
+    const emailInput = document.getElementById('recruiterEmail');
+    const companyInput = document.getElementById('recruiterCompany');
+
+    const name = nameInput?.value.trim() || '';
+    const email = emailInput?.value.trim() || '';
+    const company = companyInput?.value.trim() || '';
 
     const submitBtn = document.getElementById('deploySubmit');
+    if (!submitBtn) {
+        console.error('[Deploy] Submit button not found');
+        return;
+    }
+
     submitBtn.disabled = true;
-    submitBtn.querySelector('.btn-text').style.display = 'none';
-    submitBtn.querySelector('.btn-loader').style.display = 'flex';
-    elements.deployError.classList.remove('show');
+    const btnText = submitBtn.querySelector('.btn-text');
+    const btnLoader = submitBtn.querySelector('.btn-loader');
+
+    if (btnText) btnText.style.display = 'none';
+    if (btnLoader) btnLoader.style.display = 'flex';
+    if (elements.deployError) elements.deployError.classList.remove('show');
 
     try {
         const result = await deployProject(state.selectedProject, {
@@ -453,12 +580,15 @@ async function handleDeploySubmit(e) {
         await updateRateLimitDisplay();
 
     } catch (error) {
-        elements.deployError.textContent = error.message;
-        elements.deployError.classList.add('show');
+        console.error('[Deploy] Submit error:', error);
+        if (elements.deployError) {
+            elements.deployError.textContent = error.message;
+            elements.deployError.classList.add('show');
+        }
     } finally {
         submitBtn.disabled = false;
-        submitBtn.querySelector('.btn-text').style.display = 'inline';
-        submitBtn.querySelector('.btn-loader').style.display = 'none';
+        if (btnText) btnText.style.display = 'inline';
+        if (btnLoader) btnLoader.style.display = 'none';
     }
 }
 
@@ -531,6 +661,11 @@ function formatTimeUntil(isoString) {
 }
 
 function showToast(message, type = 'info') {
+    if (!elements.toastContainer) {
+        console.warn('[Toast] Container not found, logging instead:', message);
+        return;
+    }
+
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
 
@@ -560,12 +695,16 @@ function startStatusPolling() {
 
         for (const [projectId, project] of Object.entries(state.projects)) {
             if (project.status === 'starting' || project.status === 'running') {
-                const response = await fetch('/api/projects');
-                if (response.ok) {
-                    const updated = await response.json();
-                    if (updated[projectId]) {
-                        updateProjectCard(projectId, updated[projectId]);
+                try {
+                    const response = await fetch('/api/projects');
+                    if (response.ok) {
+                        const updated = await response.json();
+                        if (updated[projectId]) {
+                            updateProjectCard(projectId, updated[projectId]);
+                        }
                     }
+                } catch (error) {
+                    console.warn('[Polling] Error:', error);
                 }
             }
         }
@@ -580,3 +719,5 @@ window.addEventListener('beforeunload', () => {
         clearInterval(state.statusPollingInterval);
     }
 });
+
+console.log('[App] Script loaded');
