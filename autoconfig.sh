@@ -341,7 +341,7 @@ GCP_DISK_SIZE=15
 GCP_DISK_TYPE=pd-standard
 
 # Instance Configuration
-SPOT_INSTANCE_LIFETIME_HOURS=2
+SPOT_INSTANCE_LIFETIME_HOURS=1
 
 # Flask Configuration
 SECRET_KEY=$flask_secret

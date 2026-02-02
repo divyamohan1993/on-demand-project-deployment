@@ -47,7 +47,7 @@ GCP_ZONE = os.environ.get("GCP_ZONE", "us-east1-c")
 GCP_MACHINE_TYPE = os.environ.get("GCP_MACHINE_TYPE", "e2-medium")  # Configurable
 GCP_DISK_SIZE = os.environ.get("GCP_DISK_SIZE", "15")  # GB
 GCP_DISK_TYPE = os.environ.get("GCP_DISK_TYPE", "pd-standard")  # pd-standard or pd-ssd
-SPOT_INSTANCE_LIFETIME_HOURS = int(os.environ.get("SPOT_INSTANCE_LIFETIME_HOURS", "2"))
+SPOT_INSTANCE_LIFETIME_HOURS = int(os.environ.get("SPOT_INSTANCE_LIFETIME_HOURS", "1"))
 
 # Secret key for Flask sessions
 SECRET_KEY = os.environ.get("SECRET_KEY", secrets.token_hex(32))
