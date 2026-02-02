@@ -478,6 +478,24 @@ setup_nginx() {
 limit_req_zone \$binary_remote_addr zone=api_limit:10m rate=10r/s;
 limit_conn_zone \$binary_remote_addr zone=conn_limit:10m;
 
+# Cloudflare real IP restoration
+set_real_ip_from 103.21.244.0/22;
+set_real_ip_from 103.22.200.0/22;
+set_real_ip_from 103.31.4.0/22;
+set_real_ip_from 104.16.0.0/13;
+set_real_ip_from 104.24.0.0/14;
+set_real_ip_from 108.162.192.0/18;
+set_real_ip_from 131.0.72.0/22;
+set_real_ip_from 141.101.64.0/18;
+set_real_ip_from 162.158.0.0/15;
+set_real_ip_from 172.64.0.0/13;
+set_real_ip_from 173.245.48.0/20;
+set_real_ip_from 188.114.96.0/20;
+set_real_ip_from 190.93.240.0/20;
+set_real_ip_from 197.234.240.0/22;
+set_real_ip_from 198.41.128.0/17;
+real_ip_header CF-Connecting-IP;
+
 server {
     listen 80;
     server_name $DOMAIN;
@@ -492,13 +510,19 @@ server {
     limit_req zone=api_limit burst=20 nodelay;
     limit_conn conn_limit 10;
     
+    # Health check endpoint (no proxy)
+    location /health {
+        return 200 'OK';
+        add_header Content-Type text/plain;
+    }
+    
     # API endpoints
     location /api/ {
         proxy_pass http://127.0.0.1:5000;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Proto \$http_x_forwarded_proto;
         proxy_connect_timeout 60s;
         proxy_read_timeout 120s;
     }
@@ -509,7 +533,7 @@ server {
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Proto \$http_x_forwarded_proto;
     }
     
     # Static files with caching
