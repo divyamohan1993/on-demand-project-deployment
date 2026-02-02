@@ -1,0 +1,13 @@
+{
+    "name": "CityGuard Response Hub",
+    "description": "Emergency response coordination system for smart city infrastructure.",
+    "github_url": "https://github.com/divyamohan1993/cityguard-response-hub",
+    "autoconfig_script": "autoconfig.sh",
+    "port": 3000,
+    "icon": "🚨",
+    "category": "Smart City",
+    "env_vars": {
+        "PORT": "3000",
+        "NODE_ENV": "production"
+    }
+}

@@ -59,7 +59,7 @@ RECAPTCHA_MIN_SCORE = float(os.environ.get("RECAPTCHA_MIN_SCORE", "0.5"))
 # GLOBAL RATE LIMITING - HARD LIMITS
 # ============================================
 
-MAX_DEPLOYMENTS_PER_HOUR = 3
+MAX_DEPLOYMENTS_PER_HOUR = 2
 DEPLOYMENT_LOG_FILE = "/opt/project-orchestrator/deployment_log.json"
 
 def load_deployment_log():
@@ -185,64 +185,102 @@ def verify_recaptcha_enterprise(token: str, expected_action: str = "DEPLOY") -> 
         return False, 0.0, str(e)
 
 # ============================================
-# HARDCODED PROJECTS - NO USER INPUT ALLOWED
+# DYNAMIC PROJECT LOADING FROM /projects FOLDER
 # ============================================
 
-def load_project_secrets(project_id):
-    """Load additional project-specific secrets from encrypted storage."""
-    secrets_file = f"/opt/project-orchestrator/secrets/projects/{project_id}.env"
-    try:
-        if os.path.exists(secrets_file):
-            env_vars = {}
-            with open(secrets_file, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith('#') and '=' in line:
-                        key, value = line.split('=', 1)
-                        env_vars[key.strip()] = value.strip().strip('"').strip("'")
-            return env_vars
-    except Exception as e:
-        print(f"Warning: Could not load secrets for {project_id}: {e}")
-    return {}
+PROJECTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "projects")
+SECRETS_DIR = "/opt/project-orchestrator/secrets/projects"
 
-PROJECTS = {
-    "setu-voice-ondc": {
-        "name": "Setu Voice ONDC Gateway",
-        "description": "AI-powered voice interface for ONDC marketplace enabling farmers to list products via voice commands.",
-        "github_url": "https://github.com/divyamohan1993/setu-voice-ondc-gateway",
-        "autoconfig_script": "autoconfig.sh",
-        "port": 3000,
-        "env_vars": {
-            "PORT": "3000",
-            "DATABASE_URL": "file:./dev.db",
-            "NODE_ENV": "production",
-        },
-        "icon": "🎤",
-        "category": "AI/ML"
-    },
-    "cityguard-response-hub": {
-        "name": "CityGuard Response Hub",
-        "description": "Emergency response coordination system for smart city infrastructure.",
-        "github_url": "https://github.com/divyamohan1993/cityguard-response-hub",
-        "autoconfig_script": "autoconfig.sh",
-        "port": 3000,
-        "env_vars": {
-            "PORT": "3000",
-            "NODE_ENV": "production",
-        },
-        "icon": "🚨",
-        "category": "Smart City"
-    },
-}
+def load_project_secrets(project_id):
+    """Load additional project-specific secrets from .env file."""
+    # Check both locations for .env files
+    possible_paths = [
+        os.path.join(SECRETS_DIR, f"{project_id}.env"),
+        os.path.join(PROJECTS_DIR, f"{project_id}.env"),
+    ]
+    
+    env_vars = {}
+    for secrets_file in possible_paths:
+        try:
+            if os.path.exists(secrets_file):
+                with open(secrets_file, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith('#') and '=' in line:
+                            key, value = line.split('=', 1)
+                            env_vars[key.strip()] = value.strip().strip('"').strip("'")
+        except Exception as e:
+            print(f"Warning: Could not load secrets from {secrets_file}: {e}")
+    
+    return env_vars
+
+def load_projects_from_folder():
+    """
+    Dynamically load all projects from the projects/ folder.
+    Each project is a .json file with optional .env for secrets.
+    """
+    projects = {}
+    
+    if not os.path.exists(PROJECTS_DIR):
+        print(f"Warning: Projects directory not found: {PROJECTS_DIR}")
+        return projects
+    
+    for filename in os.listdir(PROJECTS_DIR):
+        # Skip non-JSON files, hidden files, and special files
+        if not filename.endswith('.json'):
+            continue
+        if filename.startswith('_') or filename.startswith('.'):
+            continue
+        
+        project_id = filename[:-5]  # Remove .json extension
+        filepath = os.path.join(PROJECTS_DIR, filename)
+        
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                project_config = json.load(f)
+            
+            # Validate required fields
+            required = ['name', 'github_url', 'port']
+            missing = [f for f in required if f not in project_config]
+            if missing:
+                print(f"Warning: Project {project_id} missing required fields: {missing}")
+                continue
+            
+            # Set defaults
+            project_config.setdefault('description', '')
+            project_config.setdefault('autoconfig_script', 'autoconfig.sh')
+            project_config.setdefault('icon', '📦')
+            project_config.setdefault('category', 'Project')
+            project_config.setdefault('env_vars', {})
+            
+            projects[project_id] = project_config
+            print(f"Loaded project: {project_id} ({project_config['name']})")
+            
+        except json.JSONDecodeError as e:
+            print(f"Error parsing {filename}: {e}")
+        except Exception as e:
+            print(f"Error loading {filename}: {e}")
+    
+    print(f"Total projects loaded: {len(projects)}")
+    return projects
+
+# Load projects at startup
+PROJECTS = load_projects_from_folder()
+
+def reload_projects():
+    """Hot-reload projects without restarting the server."""
+    global PROJECTS
+    PROJECTS = load_projects_from_folder()
+    return len(PROJECTS)
 
 def get_project_env_vars(project_id):
-    """Get environment variables for a project."""
+    """Get environment variables for a project (config + secrets merged)."""
     project = PROJECTS.get(project_id)
     if not project:
         return {}
     env_vars = project.get("env_vars", {}).copy()
     secret_vars = load_project_secrets(project_id)
-    env_vars.update(secret_vars)
+    env_vars.update(secret_vars)  # Secrets override config
     return env_vars
 
 # Instance tracking - only ONE can be active at a time

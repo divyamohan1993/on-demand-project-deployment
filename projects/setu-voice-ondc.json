@@ -1,0 +1,14 @@
+{
+    "name": "Setu Voice ONDC Gateway",
+    "description": "AI-powered voice interface for ONDC marketplace enabling farmers to list products via voice commands.",
+    "github_url": "https://github.com/divyamohan1993/setu-voice-ondc-gateway",
+    "autoconfig_script": "autoconfig.sh",
+    "port": 3000,
+    "icon": "🎤",
+    "category": "AI/ML",
+    "env_vars": {
+        "PORT": "3000",
+        "NODE_ENV": "production",
+        "DATABASE_URL": "file:./dev.db"
+    }
+}

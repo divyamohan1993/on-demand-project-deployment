@@ -561,16 +561,19 @@ async function handleDeploySubmit(e) {
     if (elements.deployError) elements.deployError.classList.remove('show');
 
     try {
-        const result = await deployProject(state.selectedProject, {
+        const projectId = state.selectedProject;
+        const projectName = state.projects[projectId]?.name || 'Project';
+
+        const result = await deployProject(projectId, {
             name,
             email,
             company
         });
 
         hideDeployModal();
-        showToast(`🚀 Starting ${state.projects[state.selectedProject].name}...`, 'success');
+        showToast(`🚀 Starting ${projectName}...`, 'success');
 
-        updateProjectCard(state.selectedProject, {
+        updateProjectCard(projectId, {
             status: 'starting',
             external_ip: result.external_ip
         });

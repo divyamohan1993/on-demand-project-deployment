@@ -214,10 +214,62 @@ configure_gcp() {
     # Check if gcloud is available
     if ! command -v gcloud &> /dev/null; then
         log "Installing Google Cloud SDK..."
-        echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee /etc/apt/sources.list.d/google-cloud-sdk.list
-        curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+        
+        # Add the Cloud SDK distribution URI as a package source
+        echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+
+        # Import the Google Cloud public key
+        curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
+
+        # Update the package list and install the Cloud SDK
         apt-get update -qq && apt-get install -y -qq google-cloud-cli
     fi
+
+    # Setup IAM for Orchestration
+    log "Configuring IAM Service Account..."
+    
+    local SA_NAME="project-orchestrator"
+    local SA_EMAIL="${SA_NAME}@${gcp_project_id}.iam.gserviceaccount.com"
+    local KEY_FILE="$APP_DIR/gcp-key.json"
+
+    # 1. Create Service Account (if not exists)
+    if ! gcloud iam service-accounts describe "$SA_EMAIL" --project="$gcp_project_id" &>/dev/null; then
+        log "Creating service account $SA_NAME..."
+        gcloud iam service-accounts create "$SA_NAME" \
+            --display-name="Project Orchestrator" \
+            --project="$gcp_project_id" || true
+    else
+        log "Service account $SA_NAME already exists"
+    fi
+
+    # 2. Grant Permissions (Compute Admin)
+    log "Granting compute.admin role..."
+    gcloud projects add-iam-policy-binding "$gcp_project_id" \
+        --member="serviceAccount:$SA_EMAIL" \
+        --role="roles/compute.admin" \
+        --condition=None &>/dev/null || true
+
+    # 3. Create/Download Key
+    if [ ! -f "$KEY_FILE" ]; then
+        log "Creating new access key..."
+        gcloud iam service-accounts keys create "$KEY_FILE" \
+            --iam-account="$SA_EMAIL" \
+            --project="$gcp_project_id"
+        
+        chmod 400 "$KEY_FILE"
+        chown root:root "$KEY_FILE"
+    else
+        log "Access key already exists"
+    fi
+
+    # 4. Activate Service Account
+    log "Activating service account..."
+    gcloud auth activate-service-account --key-file="$KEY_FILE" --project="$gcp_project_id"
+    
+    # Store key path in environment
+    echo "GOOGLE_APPLICATION_CREDENTIALS=$KEY_FILE" >> "$secrets_file"
+    
+    log_success "GCP IAM configured successfully"
     
     # Get project ID
     local project_id=$(curl -s "http://metadata.google.internal/computeMetadata/v1/project/project-id" -H "Metadata-Flavor: Google" 2>/dev/null || echo "")
