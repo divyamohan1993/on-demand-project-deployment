@@ -375,6 +375,92 @@ echo "Startup script completed for {project["name"]}"
 '''
     return startup_script
 
+# ============================================
+# STATE PERSISTENCE & CLOUDFLARE
+# ============================================
+
+STATE_FILE = "/opt/project-orchestrator/active_instance.json"
+CLOUDFLARE_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN")
+CLOUDFLARE_ZONE_ID = os.environ.get("CLOUDFLARE_ZONE_ID")
+
+def save_active_instance(instance_data):
+    """Persist active instance state to disk."""
+    try:
+        with open(STATE_FILE, 'w') as f:
+            json.dump(instance_data, f)
+    except Exception as e:
+        print(f"Error saving state: {e}")
+
+def load_active_instance():
+    """Load active instance state from disk."""
+    global ACTIVE_INSTANCE
+    try:
+        if os.path.exists(STATE_FILE):
+            with open(STATE_FILE, 'r') as f:
+                ACTIVE_INSTANCE = json.load(f)
+                # Verify if it's actually still running according to expiry
+                if ACTIVE_INSTANCE and 'expires_at' in ACTIVE_INSTANCE:
+                     if datetime.now() > datetime.fromisoformat(ACTIVE_INSTANCE['expires_at']):
+                         print("Loaded state is expired, clearing...")
+                         ACTIVE_INSTANCE = None
+                         os.remove(STATE_FILE)
+    except Exception as e:
+        print(f"Error loading state: {e}")
+
+def update_cloudflare_dns(subdomain, ip_address):
+    """Update Cloudflare A record for the project subdomain."""
+    if not CLOUDFLARE_API_TOKEN or not CLOUDFLARE_ZONE_ID:
+        print("Warning: Cloudflare credentials not set. Skipping DNS update.")
+        return False
+
+    print(f"Updating Cloudflare DNS for {subdomain}.dmj.one -> {ip_address}")
+    
+    headers = {
+        "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
+    # 1. Get existing record
+    try:
+        url = f"https://api.cloudflare.com/client/v4/zones/{CLOUDFLARE_ZONE_ID}/dns_records"
+        params = {"name": f"{subdomain}.dmj.one", "type": "A"}
+        
+        response = requests.get(url, headers=headers, params=params)
+        data = response.json()
+        
+        if not data.get("success"):
+            print(f"Cloudflare Error: {data.get('errors')}")
+            return False
+
+        record_id = None
+        if data["result"]:
+            record_id = data["result"][0]["id"]
+
+        # 2. Create or Update record
+        payload = {
+            "type": "A",
+            "name": f"{subdomain}.dmj.one",
+            "content": ip_address,
+            "ttl": 120, # Short TTL for demos
+            "proxied": True # Use Cloudflare Proxy
+        }
+
+        if record_id:
+            # Update
+            update_url = f"{url}/{record_id}"
+            requests.put(update_url, headers=headers, json=payload)
+        else:
+            # Create
+            requests.post(url, headers=headers, json=payload)
+            
+        return True
+    except Exception as e:
+        print(f"Cloudflare Exception: {e}")
+        return False
+
+# Load state on startup
+load_active_instance()
+
 def terminate_all_instances():
     """Terminate ALL active demo instances"""
     global ACTIVE_INSTANCE
@@ -396,6 +482,8 @@ def terminate_all_instances():
         except Exception as e:
             print(f"Error terminating tracked instance: {e}")
         ACTIVE_INSTANCE = None
+        if os.path.exists(STATE_FILE):
+            os.remove(STATE_FILE)
     
     # Also cleanup any orphaned demo instances
     try:
@@ -496,6 +584,14 @@ def create_spot_instance(project_id, recruiter_info):
             "project": project,
             "recruiter": recruiter_info
         }
+        
+        # PERSIST STATE
+        save_active_instance(ACTIVE_INSTANCE)
+        
+        # UPDATE CLOUDFLARE
+        if external_ip:
+            # Run in thread to not block response
+            threading.Thread(target=update_cloudflare_dns, args=(project_id, external_ip)).start()
         
         record_deployment(recruiter_info)
         
