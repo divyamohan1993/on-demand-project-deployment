@@ -468,15 +468,21 @@ EOF
 }
 
 # ============================================
-# STEP 8: NGINX CONFIGURATION
+# STEP 8: NGINX CONFIGURATION (Cloudflare Flexible Mode)
 # ============================================
 setup_nginx() {
-    log_section "STEP 8: Configuring Nginx"
+    log_section "STEP 8: Configuring Nginx (Cloudflare Flexible Mode)"
     
-    cat > /etc/nginx/sites-available/project-orchestrator << EOF
+    # Remove any existing SSL configs from certbot to make idempotent
+    rm -f /etc/nginx/sites-enabled/project-orchestrator
+    rm -f /etc/nginx/sites-available/project-orchestrator
+    rm -f /etc/nginx/sites-enabled/default
+    
+    # Create fresh HTTP-only config (Cloudflare handles HTTPS)
+    cat > /etc/nginx/sites-available/project-orchestrator << 'NGINXEOF'
 # Rate limiting zone
-limit_req_zone \$binary_remote_addr zone=api_limit:10m rate=10r/s;
-limit_conn_zone \$binary_remote_addr zone=conn_limit:10m;
+limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;
+limit_conn_zone $binary_remote_addr zone=conn_limit:10m;
 
 # Cloudflare real IP restoration
 set_real_ip_from 103.21.244.0/22;
@@ -498,7 +504,7 @@ real_ip_header CF-Connecting-IP;
 
 server {
     listen 80;
-    server_name $DOMAIN;
+    server_name projects.dmj.one;
     
     # Security headers
     add_header X-Frame-Options "SAMEORIGIN" always;
@@ -510,7 +516,7 @@ server {
     limit_req zone=api_limit burst=20 nodelay;
     limit_conn conn_limit 10;
     
-    # Health check endpoint (no proxy)
+    # Health check endpoint
     location /health {
         return 200 'OK';
         add_header Content-Type text/plain;
@@ -519,10 +525,11 @@ server {
     # API endpoints
     location /api/ {
         proxy_pass http://127.0.0.1:5000;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$http_x_forwarded_proto;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # Hardcode https - Cloudflare Flexible mode always serves HTTPS to users
+        proxy_set_header X-Forwarded-Proto https;
         proxy_connect_timeout 60s;
         proxy_read_timeout 120s;
     }
@@ -530,15 +537,16 @@ server {
     # Main application
     location / {
         proxy_pass http://127.0.0.1:5000;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$http_x_forwarded_proto;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # Hardcode https - Cloudflare Flexible mode always serves HTTPS to users
+        proxy_set_header X-Forwarded-Proto https;
     }
     
     # Static files with caching
     location /static/ {
-        alias $APP_DIR/static/;
+        alias /opt/project-orchestrator/static/;
         expires 30d;
         add_header Cache-Control "public, immutable";
         access_log off;
@@ -554,15 +562,14 @@ server {
         return 404;
     }
 }
-EOF
+NGINXEOF
 
     ln -sf /etc/nginx/sites-available/project-orchestrator /etc/nginx/sites-enabled/
-    rm -f /etc/nginx/sites-enabled/default
     
     nginx -t
-    systemctl restart nginx
+    systemctl reload nginx
     
-    log_success "Nginx configured"
+    log_success "Nginx configured for Cloudflare Flexible mode"
 }
 
 # ============================================
@@ -639,28 +646,14 @@ EOF
 }
 
 # ============================================
-# STEP 10: SSL CERTIFICATE
+# STEP 10: SSL (Handled by Cloudflare)
 # ============================================
 setup_ssl() {
     log_section "STEP 10: SSL Certificate"
     
-    # Check if domain resolves to this server
-    local server_ip=$(curl -s http://checkip.amazonaws.com 2>/dev/null || echo "")
-    local domain_ip=$(dig +short "$DOMAIN" 2>/dev/null || echo "")
-    
-    if [ "$server_ip" = "$domain_ip" ]; then
-        log "Domain $DOMAIN resolves correctly to $server_ip"
-        log "Requesting SSL certificate..."
-        certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --email admin@$DOMAIN --redirect 2>/dev/null || {
-            log_warning "SSL certificate request failed - you may need to run manually:"
-            log_warning "sudo certbot --nginx -d $DOMAIN"
-        }
-    else
-        log_warning "Domain $DOMAIN does not resolve to this server ($server_ip)"
-        log_warning "DNS A record: $DOMAIN -> $domain_ip"
-        log_warning "Expected: $DOMAIN -> $server_ip"
-        log_warning "Please configure DNS and run: sudo certbot --nginx -d $DOMAIN"
-    fi
+    log "SSL is handled by Cloudflare (Flexible mode)"
+    log "No server-side SSL certificate needed"
+    log_success "Cloudflare provides HTTPS to end users"
 }
 
 # ============================================
